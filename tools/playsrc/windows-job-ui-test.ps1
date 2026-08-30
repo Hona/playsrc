@@ -12,6 +12,8 @@ $config=Get-Content -Raw (Join-Path $root 'playsrc.local.json')|ConvertFrom-Json
 if($Job -notmatch '^[a-f0-9-]{36}$'){throw 'Invalid diagnostic job'}
 $jobDirectory=Join-Path $config.sourceCacheDir "local-jobs/$Job"
 if($Observe) {
+ function Step([string]$stage){[IO.File]::WriteAllText((Join-Path $Observe 'observer-stage'),$stage)}
+ Step 'entry'
  if((Split-Path $Observe) -ne (Join-Path $config.sourceCacheDir 'evidence/windows-job-ui-tests')){throw 'Invalid observer directory'}
  Add-Type -Path (Join-Path $PSScriptRoot 'windows-readback-guard.cs')
  [PlaysrcReadbackGuard]::Start(45000,536870912,(Join-Path $Observe 'observer-fault.json'))
@@ -29,26 +31,32 @@ public static class DiagnosticDialog {
 }
 '@
  [IO.File]::WriteAllText((Join-Path $Observe 'ready'),"$PID")
+ Step 'request-wait'
  $deadline=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()+35000
  $requestFile=Join-Path $Observe 'request.json'
  while(!(Test-Path -LiteralPath $requestFile) -and [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -lt $deadline){Start-Sleep -Milliseconds 20}
  $request=Get-Content -Raw -LiteralPath $requestFile|ConvertFrom-Json
+ Step "run-link: $($request.task)"
  if($request.task -notmatch '^playsrc-local-job-([a-f0-9-]{36})$'){throw 'Invalid exact task'}
  $link=Join-Path $jobDirectory "$($Matches[1])-run.json"
  while(!(Test-Path -LiteralPath $link) -and [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -lt $deadline){Start-Sleep -Milliseconds 20}
  $identity=Get-Content -Raw -LiteralPath $link|ConvertFrom-Json
+ Step 'run-linked'
  if($identity.job -ne $Job -or $identity.task -ne $request.task -or (Split-Path $identity.run) -ne $jobDirectory){throw 'Exact diagnostic run differs'}
  $displayFile=Join-Path $identity.run 'consent-displayed.json'
  while(!(Test-Path -LiteralPath $displayFile) -and [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -lt $deadline){Start-Sleep -Milliseconds 20}
  $display=Get-Content -Raw -LiteralPath $displayFile|ConvertFrom-Json
+ Step 'display-read'
  if($display.job -ne $Job -or $display.task -ne $identity.task -or $display.run -ne $identity.run -or $display.action -notmatch '^diagnostic [0-9]+ [01]$'){throw 'Observer cannot act on a non-diagnostic workload'}
  $helper=[Diagnostics.Process]::GetProcessById([int]$display.helperPid)
+ Step 'helper-read'
  if(([DateTimeOffset]$helper.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds() -ne $display.helperCreatedAt -or $helper.SessionId -ne [Diagnostics.Process]::GetCurrentProcess().SessionId){throw 'Native helper creation/session differs'}
  $handle=[IntPtr][long]$display.dialog.window;[uint32]$pidOfWindow=0
  [void][DiagnosticDialog]::GetWindowThreadProcessId($handle,[ref]$pidOfWindow)
  if($pidOfWindow -ne $helper.Id -or ![DiagnosticDialog]::IsWindowVisible($handle)){throw 'Native diagnostic window differs'}
  $approve=[DiagnosticDialog]::GetDlgItem($handle,100);$deny=[DiagnosticDialog]::GetDlgItem($handle,101)
  $names=@([DiagnosticDialog]::Text($approve),[DiagnosticDialog]::Text($deny))
+ Step 'controls-read'
  if($names -notcontains 'Approve' -or $names -notcontains 'Deny'){throw 'Native Approve/Deny controls were not found'}
  $began=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
  if($Case -eq 'race') {
