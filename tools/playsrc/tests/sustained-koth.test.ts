@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test"
 import { requireSustainedBudget, sustainedKothTarget, SUSTAINED_KOTH, summarizeSustainedWindow, installSustainedObservation, sustainedRunIssues } from "../profile/sustained-koth"
-import { parseHeadedProfile, profileMinimumRemainingMilliseconds } from "../src/profile-runner"
+import { parseHeadedProfile, profileMinimumRemainingMilliseconds, profileBrowserLaunch } from "../src/profile-runner"
+test("the native owner uses the same explicit browser channel as the sustained child", () => {
+  expect(profileBrowserLaunch("sustained-harvest", { args: ["--example"] })).toEqual({ channel: "msedge", args: ["--example"] })
+  expect(profileBrowserLaunch("sustained-viaduct", {})).toEqual({ channel: "msedge" })
+  expect(profileBrowserLaunch("gameplay", { channel: "chrome" })).toEqual({ channel: "chrome" })
+})
 test("retained entropy is explicit and never forwarded as a Playwright option", () => {
   const identity = "a".repeat(64)
   expect(parseHeadedProfile(["sustained-harvest", "--sustained-entropy", identity]).sustainedEntropy).toBe(identity)
