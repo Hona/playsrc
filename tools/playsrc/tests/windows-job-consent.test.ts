@@ -41,6 +41,8 @@ test("receipt binds job/task/run/creation-time/lock and teardown; malformed or s
 test("only validated interactive workloads use consent; readback and background never create dialogs", async () => {
   const bridge = await readFile(path.resolve(import.meta.dir, "../windows-job.ps1"), "utf8")
   const native = await readFile(path.resolve(import.meta.dir, "../windows-job-native.cs"), "utf8")
+  const launcher = await readFile(path.resolve(import.meta.dir, "../windows-job-console.ps1"), "utf8")
+  expect(launcher).not.toMatch(/Add-Type|Get-CimInstance|GetConsoleWindow/)
   expect(bridge).not.toMatch(/\[switch\]\$Ready|--ready|-Ready\b/)
   expect(bridge).toContain("'Test','Diagnostic','Cancel'")
   expect(bridge).toContain("--task $(Quote $name)")
