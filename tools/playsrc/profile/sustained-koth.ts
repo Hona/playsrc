@@ -113,7 +113,8 @@ export async function observeSustainedKoth(options: {
 export async function retireSustainedKoth(page: Page, directory: string, checkNativeWindow: () => Promise<void>) {
   const snapshot = () => page.evaluate(() => ({ at: performance.now(),
     accounting: structuredClone((globalThis as any).__playsrcGpuTextureAccounting),
-    owners: structuredClone((globalThis as any).__playsrcTextureOwners) }))
+    owners: structuredClone((globalThis as any).__playsrcTextureOwners),
+    losses: structuredClone((globalThis as any).__playsrcFrameProfiler.losses) }))
   await checkNativeWindow()
   const before = await snapshot(), old = new Set(liveSustainedAttachments(before.owners.records).map(record => record.id))
   const root = page.locator("main")
@@ -127,5 +128,6 @@ export async function retireSustainedKoth(page: Page, directory: string, checkNa
   await checkNativeWindow()
   await page.screenshot({ path: path.join(directory, "sustained-disconnected.png") })
   if (before.owners.dropped || after.owners.dropped) throw new Error("Native attachment lifetime evidence overflowed")
+  if (after.losses.length) throw new Error("Native attachment retirement reported a GPU failure")
   if (!old.size || survivors.length) throw new Error(`Native attachment retirement incomplete: ${survivors.length}/${old.size} old attachments remain`)
 }
