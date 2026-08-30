@@ -18,7 +18,7 @@ export class Tf2WasmBuildError extends Error {
 
 export function threadedWasmRustFlags(root: string, cargoHome: string, sysroot: string): string[] {
   return [
-    "-Ctarget-feature=+atomics,+bulk-memory",
+    "-Ctarget-feature=+atomics,+bulk-memory,+simd128",
     "-Clink-arg=--shared-memory",
     "-Clink-arg=--max-memory=4294967296",
     "-Clink-arg=--import-memory",
@@ -26,10 +26,18 @@ export function threadedWasmRustFlags(root: string, cargoHome: string, sysroot: 
     "-Clink-arg=--export=__tls_size",
     "-Clink-arg=--export=__tls_align",
     "-Clink-arg=--export=__tls_base",
-    `--remap-path-prefix=${root}=/playsrc`,
-    `--remap-path-prefix=${cargoHome}=/cargo`,
-    `--remap-path-prefix=${sysroot}=/rust`,
+    ...wasmSourcePathFlags(root, cargoHome, sysroot),
   ]
+}
+
+function wasmSourcePathFlags(root: string, cargoHome: string, sysroot: string): string[] {
+  return [`--remap-path-prefix=${root}=/playsrc`, `--remap-path-prefix=${cargoHome}=/cargo`, `--remap-path-prefix=${sysroot}=/rust`]
+}
+
+export function audioWasmRustFlags(root: string, cargoHome: string, sysroot: string): string[] {
+  // Audio has its own unshared memory; only the deterministic SIMD and source
+  // remapping contract is common with the threaded gameplay build.
+  return ["-Ctarget-feature=+simd128", ...wasmSourcePathFlags(root, cargoHome, sysroot)]
 }
 
 type WasmBuildManifest = Readonly<{
@@ -198,7 +206,7 @@ export async function buildThreadedTf2Wasm(
     "--target", "wasm32-unknown-unknown", "--target-dir", audioTarget, "--release", "-Z", "build-std=panic_abort,std",
   ], {
     cwd: repositoryRoot,
-    env: { ...buildEnvironment, RUSTFLAGS: undefined, CARGO_ENCODED_RUSTFLAGS: flags.filter(flag => flag.startsWith("--remap-path-prefix=")).join("\x1f"), CARGO_BUILD_JOBS: process.env.PLAYSRC_PROFILE_OWNER_TOKEN ? "2" : process.env.CARGO_BUILD_JOBS },
+    env: { ...buildEnvironment, RUSTFLAGS: undefined, CARGO_ENCODED_RUSTFLAGS: audioWasmRustFlags(repositoryRoot, cargoHome, sysroot).join("\x1f"), CARGO_BUILD_JOBS: process.env.PLAYSRC_PROFILE_OWNER_TOKEN ? "2" : process.env.CARGO_BUILD_JOBS },
     stdout: "inherit", stderr: "inherit",
   })
   const audioExit = await audio.exited
