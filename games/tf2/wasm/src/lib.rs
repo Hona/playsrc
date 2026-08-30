@@ -663,6 +663,7 @@ struct ClassPreview {
     model: String,
     scene: playsrc_tf2::class_selection::ScenePlayer,
     flex: playsrc_tf2::class_selection::ModelPanelFlexState,
+    transitions: playsrc_studio_model::SequenceTransitioner,
 }
 
 struct Slot {
@@ -2485,6 +2486,7 @@ struct ModelPoseRequest {
     control_point: Option<u32>,
     class_selection: bool,
     model_panel: bool,
+    entity_model_panel: bool,
     model_panel_reset: bool,
     flex_controllers: Option<BTreeMap<String, f32>>,
     actor_identity: u32,
@@ -2746,14 +2748,15 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         let item_definition = (definition != u32::MAX).then_some(definition);
         let start_tick = reader.u64()?;
         let activity_start_tick = (start_tick != u64::MAX).then_some(start_tick);
-        if kind > 7
+        if kind > 8
             || (kind == 7 && (actor_identity == 0 || has_cloak || [local_factor, world_factor, raw_factor].into_iter().chain(player_tint).any(|v| v != 0.0)))
             || (matches!(kind, 3 | 4 | 6) && actor_identity != 0 && !hud_model)
             || attachments_only > 1
             || has_fire_view > 1
             || (attachments_only == 1 && (kind != 1 || has_fire_view != 1))
             || (has_fire_view == 1 && kind != 1)
-            || model_panel_reset > 1 || (model_panel_reset != 0 && !matches!(kind, 3 | 4 | 6))
+            || model_panel_reset > 1 || (model_panel_reset != 0 && !matches!(kind, 3 | 4 | 6 | 8))
+            || (kind == 8 && (actor_identity != 0 || has_cloak || hud_model || item_definition.is_some()))
             || item_definition.is_some_and(|definition| playsrc_tf2::equipment::supported_item(definition).is_none())
             || item_definition.is_some() && !matches!(kind, 3 | 4 | 5 | 6) && activity_start_tick.is_none()
         {
@@ -2776,7 +2779,7 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         let model = reader.text()?.to_ascii_lowercase();
         let item_text = reader.text()?.to_ascii_lowercase();
         let item = match kind {
-            0 | 2 | 3 | 4 | 7 if item_text.is_empty() => None,
+            0 | 2 | 3 | 4 | 7 | 8 if item_text.is_empty() => None,
             1 | 5 | 6 if !item_text.is_empty() => Some(item_text),
             _ => return Err(()),
         };
@@ -2804,7 +2807,7 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
             3 => Some(playsrc_studio_model::ViewModelPhase::ReloadInsertOrLoop),
             4 => Some(playsrc_studio_model::ViewModelPhase::ReloadFinish),
             5 => Some(playsrc_studio_model::ViewModelPhase::Idle),
-            u8::MAX if matches!(kind, 0 | 3 | 4 | 5 | 6 | 7) => None,
+            u8::MAX if matches!(kind, 0 | 3 | 4 | 5 | 6 | 7 | 8) => None,
             _ => return Err(()),
         };
         let packed_body_value = i32::from_le_bytes(reader.take(4)?.try_into().map_err(|_| ())?);
@@ -2899,6 +2902,7 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
             control_point: (kind == 7).then_some(actor_identity),
             class_selection: kind == 3,
             model_panel: matches!(kind, 3 | 4 | 6),
+            entity_model_panel: kind == 8,
             model_panel_reset: model_panel_reset != 0,
             flex_controllers: None,
             actor_identity: if kind == 7 { 0 } else { actor_identity },
@@ -3075,7 +3079,7 @@ fn encode_model_poses(
     out.extend_from_slice(&0_u32.to_le_bytes());
     let mut output_count = 0_u32;
     let mut sampled_poses =
-        BTreeMap::<(String, usize, u32, u32, Vec<u32>, Option<u32>), playsrc_studio_model::SampledPose>::new();
+        BTreeMap::<(String, usize, u32, u32, Vec<u32>, Option<u32>, Option<u32>), playsrc_studio_model::SampledPose>::new();
     for (request_index, original) in requests.iter().enumerate() {
         let mut stage = "class-scene";
         let result = (|| -> Result<(), ()> {
@@ -3336,6 +3340,7 @@ fn encode_model_poses(
                 request.elapsed.to_bits(),
                 pose_parameters.iter().map(|p| p.0).collect(),
                 request.barrel_angle.map(f32::to_bits),
+                request.entity_model_panel.then_some(request.identity),
             );
             if let std::collections::btree_map::Entry::Vacant(entry) =
                 sampled_poses.entry(pose_key.clone())
@@ -3348,6 +3353,15 @@ fn encode_model_poses(
                     (base, base_cycle - base_cycle.trunc(), vec![playsrc_studio_model::AnimationLayer {
                         sequence, cycle: playsrc_studio_model::Float32(cycle.to_bits()), weight: playsrc_studio_model::Float32(1.0f32.to_bits()),
                     }])
+                } else if request.entity_model_panel {
+                    let retained = class_scenes.entry(request.identity).or_default();
+                    if retained.model != request.model || request.model_panel_reset {
+                        retained.transitions.clear();
+                        retained.model = request.model.clone();
+                    }
+                    let layers = retained.transitions.update(model, sequence, cycle, request.current_time,
+                        (request.current_time - request.frame_time).max(0.0), &pose_parameters).map_err(|_| ())?;
+                    (sequence, cycle, layers)
                 } else { (sequence, cycle, Vec::new()) };
                 let pose = playsrc_studio_model::sample_pose_at_time(
                     model,

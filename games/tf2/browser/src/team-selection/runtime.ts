@@ -65,6 +65,8 @@ export type Tf2TeamSelectionModelPanel = Readonly<{
   angles: readonly [number, number, number]
   animation: string
   sequence: string
+  animationRevision: number
+  modelRevision: number
   bounds: Readonly<{ x: number; y: number; width: number; height: number }>
 }>
 
@@ -138,6 +140,14 @@ class Integration implements Tf2TeamSelectionIntegration {
   readonly #onRequest: Tf2TeamSelectionIntegrationRequest["onRequest"]
   readonly #onModelPanels: Tf2TeamSelectionIntegrationRequest["onModelPanels"]
   readonly #animations = new Map<string, string>()
+  readonly #animationRevisions = new Map<string, number>()
+  readonly #entered = new Set<Tf2TeamChoice>()
+  readonly #hoverDeadlines = new Map<Tf2TeamChoice, number>()
+  readonly #disabled = new Map<Tf2TeamChoice, boolean>()
+  readonly #clock: Tf2TeamSelectionIntegrationRequest["clock"]
+  #modelRevision = 0
+  #animationRevision = 0
+  #nextTick = 0
   #owner = 0
   #state = TF2_TEAM_SELECTION_INITIAL_STATE
   #destroyed = false
@@ -147,6 +157,7 @@ class Integration implements Tf2TeamSelectionIntegration {
     this.#source = request.resources.document(TEAM_SELECTION_PATH)
     this.#onRequest = request.onRequest
     this.#onModelPanels = request.onModelPanels
+    this.#clock = request.clock
     const initialized = initializeVguiRuntime({
       runtimeIdentity: "tf2-team-selection",
       root: request.root,
@@ -234,8 +245,53 @@ class Integration implements Tf2TeamSelectionIntegration {
     if (this.#state.visible) this.dispatch({ kind: "hover", team: null })
   }
 
-  #present(previous: Tf2TeamSelectionState): void {
+  #setAnimation(name: string, animation: string): void {
+    const authored = this.#source.root.children.find(node => node.name === name)
+    const model = authored && object(authored, "model")
+    if (!model?.children.some(child => child.name.toLowerCase() === "animation" && scalar(child, "name") === animation)) return
+    this.#animations.set(name, animation)
+    this.#animationRevisions.set(name, ++this.#animationRevision)
+  }
+
+  #enter(team: Tf2TeamChoice, entered: boolean): void {
+    this.#hoverDeadlines.delete(team)
+    if (entered) {
+      this.#entered.add(team)
+      const button = this.#source.root.children.find(node => node.name === BUTTON_NAMES[team])
+      const delay = button ? Number(scalar(button, "hover") ?? -1) : -1
+      if (delay > 0) this.#hoverDeadlines.set(team, this.#clock.nowSeconds() + delay)
+    } else this.#entered.delete(team)
+    this.#setAnimation(this.#modelName(team), `${entered ? "enter" : "exit"}_${this.#disabled.get(team) ? "disabled" : "enabled"}`)
+  }
+
+  #tickButtons(time: number): void {
+    const server = this.#state.server
+    if (!server) return
+    for (const team of TAB_ORDER) {
+      const disabled = team === "red" ? server.redDisabled : team === "blue" ? server.blueDisabled : false
+      if (disabled !== (this.#disabled.get(team) ?? false)) {
+        this.#disabled.set(team, disabled)
+        if (this.#entered.has(team)) this.#enter(team, true)
+        else this.#setAnimation(this.#modelName(team), disabled ? "idle_disabled" : "idle_enabled")
+      }
+      const deadline = this.#hoverDeadlines.get(team)
+      if (deadline !== undefined && deadline < time) {
+        this.#hoverDeadlines.delete(team)
+        this.#setAnimation(this.#modelName(team), disabled ? "hover_disabled" : "hover_enabled")
+      }
+    }
+  }
+
+  #present(previous: Tf2TeamSelectionState, event: Tf2TeamSelectionEvent): void {
     const state = this.#state
+    if (state.visible && !previous.visible) {
+      this.#modelRevision += 1
+      this.#entered.clear()
+      this.#hoverDeadlines.clear()
+      for (const name of MODEL_NAMES) this.#setAnimation(name, "idle_enabled")
+      this.#tickButtons(this.#clock.nowSeconds())
+      this.#nextTick = this.#clock.nowSeconds() + 0.1
+    }
     this.#runtime.deferPresentation(() => {
       apply(this.#runtime, { kind: "set-panel-state", panel: 1, visible: state.visible })
       apply(this.#runtime, { kind: "set-panel-state", panel: this.#owner, visible: state.visible })
@@ -266,21 +322,18 @@ class Integration implements Tf2TeamSelectionIntegration {
         const button = find(this.#runtime, BUTTON_NAMES[team], this.#owner)!
         apply(this.#runtime, { kind: "set-panel-state", panel: button, enabled: true })
         this.#root.querySelector?.<HTMLElement>(`[data-vgui-name="${BUTTON_NAMES[team]}"]`)?.setAttribute("aria-disabled", String(disabled))
-        const name = team === "red" ? "reddoor" : "bluedoor"
-        const beforeDisabled = team === "red" ? previous.server?.redDisabled : previous.server?.blueDisabled
-        if (disabled !== beforeDisabled) this.#animations.set(name, disabled ? "idle_disabled" : "idle_enabled")
       }
       if (previous.hovered !== state.hovered) {
         if (previous.hovered) {
-          const name = this.#modelName(previous.hovered)
-          const disabled = previous.hovered === "red" ? server.redDisabled : previous.hovered === "blue" ? server.blueDisabled : false
-          this.#animations.set(name, disabled ? "exit_disabled" : "exit_enabled")
+          this.#enter(previous.hovered, false)
         }
         if (state.hovered) {
-          const name = this.#modelName(state.hovered)
-          const disabled = state.hovered === "red" ? server.redDisabled : state.hovered === "blue" ? server.blueDisabled : false
-          this.#animations.set(name, disabled ? "enter_disabled" : "enter_enabled")
+          this.#enter(state.hovered, true)
         }
+      }
+      if (event.kind === "focus" && previous.focused !== state.focused) {
+        if (previous.focused) this.#enter(previous.focused, false)
+        if (state.focused) this.#enter(state.focused, true)
       }
     })
     if (state.focused && previous.focused !== state.focused) {
@@ -332,6 +385,8 @@ class Integration implements Tf2TeamSelectionIntegration {
         angles: Object.freeze([authoredNumber(model, "angles_x"), authoredNumber(model, "angles_y"), authoredNumber(model, "angles_z")]) as readonly [number, number, number],
         animation,
         sequence: authoredAnimation ? scalar(authoredAnimation, "sequence") ?? "" : "idle",
+        animationRevision: this.#animationRevisions.get(name) ?? 0,
+        modelRevision: this.#modelRevision,
         bounds: snapshot.bounds,
       })]
     }))
@@ -343,7 +398,7 @@ class Integration implements Tf2TeamSelectionIntegration {
     const transition = transitionTf2TeamSelection(previous, event)
     if (transition.disposition !== "applied") return transition
     this.#state = transition.state
-    this.#present(previous)
+    this.#present(previous, event)
     if (transition.request) this.#onRequest(transition.request)
     return transition
   }
@@ -386,6 +441,12 @@ class Integration implements Tf2TeamSelectionIntegration {
     if (this.#state.visible) {
       apply(this.#runtime, { kind: "frame", timeSeconds })
       this.#syncAccessibility()
+      if (timeSeconds >= this.#nextTick) {
+        this.#nextTick = timeSeconds + 0.1
+        const before = this.#animationRevision
+        this.#tickButtons(timeSeconds)
+        if (before !== this.#animationRevision) this.#onModelPanels(this.modelPanels())
+      }
     }
   }
 

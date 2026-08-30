@@ -5638,6 +5638,46 @@ mod tests {
     }
 
     #[test]
+    fn entity_panel_transitions_preserve_authored_rotation_sign_hierarchy_and_interruption_order() {
+        let mut model = build().model;
+        let root = [float(0.5); 4];
+        let handle = [float(0.0), float(0.0), float((std::f32::consts::FRAC_PI_4 / 2.0).sin()), float((std::f32::consts::FRAC_PI_4 / 2.0).cos())];
+        model.animations.clear();
+        for index in 0..2 {
+            model.animations.push(animation(index, b"panel", 0.0, 0));
+            model.sequences[index].animation_indices = vec![index as i16];
+            for frame in &mut model.animations[index].frames {
+                frame.rotations = vec![root, if index == 0 { identity_quaternion() } else { handle }];
+            }
+        }
+        let parameters = vec![float(0.0)];
+        let mut transitions = crate::SequenceTransitioner::default();
+        assert!(transitions.update(&model, 0, 1.0, 1.0, 0.99, &parameters).unwrap().is_empty());
+        let layers = transitions.update(&model, 1, 0.0, 1.02, 1.0, &parameters).unwrap();
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].sequence, 0);
+        assert!((f32::from_bits(layers[0].weight.0) - 0.972).abs() < 1e-5);
+        let state = AnimationState { base_sequence: 1, cycle: float(0.0), pose_parameters: parameters.clone(), layers, bone_rotations: Vec::new() };
+        let pose = sample_pose(&model, &state).unwrap();
+        assert!(values4(pose.local_rotations[1])[2] > 0.0);
+        assert!(values4(pose.local_rotations[1])[2] < values4(handle)[2]);
+        let world = apply_entity_transform(&model, &pose, source_entity_transform(vector([290.0, 0.0, -34.0]), vector([0.0, 180.0, 0.0])).unwrap()).unwrap();
+        let matrix = world.bone_matrices[1].0.map(|v| f32::from_bits(v.0));
+        assert!(matrix[8] > 0.0 && -matrix[4] > 0.0, "positive local rotation raises the screen-right axis; do not negate it");
+        let interrupted = transitions.update(&model, 0, 0.0, 1.05, 1.04, &parameters).unwrap();
+        assert_eq!(interrupted.iter().map(|v| v.sequence).collect::<Vec<_>>(), [1, 0]);
+        assert!(transitions.update(&model, 0, 1.0, 1.3, 1.29, &parameters).unwrap().is_empty());
+        // A terminal pose may have been reused for many paints; its next fade
+        // starts at the previous paint, not at its last expensive pose sample.
+        let resumed = transitions.update(&model, 1, 0.0, 5.02, 5.0, &parameters).unwrap();
+        assert!((f32::from_bits(resumed[0].weight.0) - 0.972).abs() < 1e-5);
+        transitions.clear();
+        assert!(transitions.update(&model, 1, 0.0, 6.0, 5.99, &parameters).unwrap().is_empty());
+        model.sequences[0].flags |= 2;
+        assert!(transitions.update(&model, 0, 0.0, 6.01, 6.0, &parameters).unwrap().is_empty());
+    }
+
+    #[test]
     fn standard_blending_rotations_feed_descendants_palettes_and_attachments() {
         let model = build().model;
         let mut state = AnimationState { base_sequence: 0, cycle: float(0.0), pose_parameters: vec![float(0.0)], layers: Vec::new(), bone_rotations: Vec::new() };

@@ -9,6 +9,7 @@ import {
 } from "../../src/team-selection"
 
 function fixture(overrides: Partial<Tf2TeamSelectionServerState> = {}) {
+  let now = 0
   const base = createTf2GameUiTransitionFixture()
   const requests: Tf2TeamSelectionRequest[] = []
   const models: (readonly Tf2TeamSelectionModelPanel[])[] = []
@@ -22,16 +23,51 @@ function fixture(overrides: Partial<Tf2TeamSelectionServerState> = {}) {
     resources: base.resources,
     viewport: { width: 1280, height: 720, devicePixelRatio: 1 },
     reducedMotion: true,
-    clock: { nowSeconds: () => 0 },
+    clock: { nowSeconds: () => now },
     random: { nextUnit: () => 0 },
     onRequest: (request) => requests.push(request),
     onModelPanels: (panels) => models.push(panels),
   })
   integration.dispatch({ kind: "show", server })
-  return Object.freeze({ ...base, server, integration, requests, models })
+  return Object.freeze({ ...base, server, integration, requests, models, frame(time: number) { now = time; integration.frame(time) } })
 }
 
 describe("authored TF2 RED/BLU team-selection VGUI", () => {
+  test("recreates authored default animations when reopening a hovered door", () => {
+    const { integration, server } = fixture()
+    integration.dispatch({ kind: "hover", team: "red" })
+    integration.dispatch({ kind: "hide" })
+    integration.dispatch({ kind: "show", server })
+    expect(integration.modelPanels().find(panel => panel.name === "reddoor")?.sequence).toBe("idle")
+  })
+
+  test("disabled doors play the authored delayed fullhover and retain hover across rule updates", () => {
+    const { integration, server, frame } = fixture()
+    integration.dispatch({ kind: "hover", team: "red" })
+    integration.dispatch({ kind: "update", server: { ...server, redDisabled: true } })
+    expect(integration.state().hovered).toBe("red")
+    frame(0.1)
+    expect(integration.modelPanels().find(panel => panel.name === "reddoor")?.animation).toBe("enter_disabled")
+    frame(2.1)
+    expect(integration.modelPanels().find(panel => panel.name === "reddoor")?.sequence).toBe("fullidle")
+    frame(2.2)
+    expect(integration.modelPanels().find(panel => panel.name === "reddoor")?.sequence).toBe("fullhover")
+    integration.dispatch({ kind: "hover", team: null })
+    expect(integration.modelPanels().find(panel => panel.name === "reddoor")?.sequence).toBe("fullidle")
+  })
+
+  test("focus navigation enters and exits disabled doors and restarts aliased sequence commands", () => {
+    const { integration } = fixture({ redDisabled: true })
+    integration.dispatch({ kind: "focus", team: "red" })
+    const entered = integration.modelPanels().find(panel => panel.name === "reddoor")!
+    expect(entered.animation).toBe("enter_disabled")
+    integration.dispatch({ kind: "focus", team: "blue" })
+    const exited = integration.modelPanels().find(panel => panel.name === "reddoor")!
+    expect(exited.animation).toBe("exit_disabled")
+    expect(exited.sequence).toBe(entered.sequence)
+    expect(exited.animationRevision).toBeGreaterThan(entered.animationRevision)
+    expect(integration.dispatch({ kind: "select", team: "red" }).disposition).toBe("ignored")
+  })
   test("consumes owned repeats without autoassigning or moving authored focus", () => {
     const { integration, requests } = fixture()
     const focused = integration.state().focused

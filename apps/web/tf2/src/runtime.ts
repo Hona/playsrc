@@ -12,6 +12,7 @@ import { APPLICATION_BUILD as __PLAYSRC_APPLICATION_BUILD__, WASM_SHA256 as __PL
 import { TF2_PRESENTATION_SCHEMA, Tf2WorkerClient, Tf2WorkerError, mergePublicationSnapshots, type CoverageSample, type LoadedGame, type ResourceConfiguration, type SimulationPublication, type VisibilityResult } from "@playsrc/game-tf2-browser"
 import { Tf2EquipmentProfile, Tf2EquipmentPresentation, equippedWeaponSlots, equipmentPipelinePoseRequests, type Tf2EquipmentPreview } from "@playsrc/game-tf2-browser/equipment"
 import { selectionTransitionMark, selectionTransitionDraw } from "./selection-transition-profile"
+import { teamModelPlayback, type TeamModelPlayback } from "./team-model-playback"
 import { initializeTf2GameUiIntegration, type Tf2GameUiIntegration } from "@playsrc/game-tf2-browser/gameui-integration"
 import type { Tf2GameUiRequest, Tf2LoadingPhase } from "@playsrc/game-tf2-browser/gameui"
 import {
@@ -478,7 +479,7 @@ export class Tf2Application {
   #teamSelectionRenderRevision = 0
   #pendingClassSelectionTeam?: 2 | 3
   readonly #teamSelectionPoses = new Map<string, PosedModel>()
-  readonly #teamSelectionAnimations = new Map<string, Readonly<{ sequence: string; startedSeconds: number; previousSeconds: number }>>()
+  readonly #teamSelectionAnimations = new Map<string, TeamModelPlayback>()
   #teamAdmission?: Readonly<{ generation: number; resolve(): void; reject(error: Error): void }>
   #hudRootCounts?: Readonly<{ playerStatus: number; ammo: number }>
   #hudContext?: SessionHudContext
@@ -2485,24 +2486,22 @@ export class Tf2Application {
     const viewport = this.#viewport()
     this.#teamSelectionRenderTask = (async () => {
       const requests = authored.flatMap((panel, index) => {
-        if (panel.sequence === "idle") return []
         const artifact = artifacts.models.get(panel.model.toLowerCase())
         const timing = artifact?.sequences.find((sequence) => sequence.label.toLowerCase() === panel.sequence.toLowerCase())
         if (!artifact || !timing) throw new Error(`TF2 authored team-door sequence is unavailable: ${panel.model}:${panel.sequence}`)
-        const prior = this.#teamSelectionAnimations.get(panel.name)
-        const current = prior?.sequence === panel.sequence
-          ? prior
-          : Object.freeze({ sequence: panel.sequence, startedSeconds: now, previousSeconds: 0 })
-        const elapsed = Math.max(0, now - current.startedSeconds)
-        if (elapsed > timing.durationSeconds && this.#teamSelectionPoses.has(panel.name)) return []
+        const step = teamModelPlayback(this.#teamSelectionAnimations.get(panel.name), panel, now, timing.durationSeconds)
+        this.#teamSelectionAnimations.set(panel.name, step.state)
+        if (!step.sample) return []
         const request = Object.freeze({
           identity: 0x1000 + index,
+          entityModelPanel: true,
+          modelPanelReset: step.reset,
           model: panel.model.toLowerCase(),
           activity: panel.sequence,
-          previousElapsedSeconds: Math.min(current.previousSeconds, elapsed),
-          elapsedSeconds: elapsed,
+          previousElapsedSeconds: step.previousElapsed,
+          elapsedSeconds: step.elapsed,
           currentTimeSeconds: now,
-          frameTimeSeconds: Math.max(0, elapsed - current.previousSeconds),
+          frameTimeSeconds: step.frameTime,
           planarSpeed: 0,
           screenAspectRatio: viewport.width / viewport.height,
           worldFarPlane: 1000,
@@ -2510,16 +2509,16 @@ export class Tf2Application {
           lod: 0,
           bodygroups: Object.freeze(artifact.bodygroupCounts.map(() => 0)),
         })
-        this.#teamSelectionAnimations.set(panel.name, Object.freeze({ ...current, previousSeconds: elapsed }))
-        return [Object.freeze({ panel: panel.name, request })]
+        return [Object.freeze({ panel: panel.name, state: step.state, request })]
       })
       if (requests.length > 0) {
         const posed = await client.models(generation, encodeModelPoseBatch(requests.map((value) => value.request)))
-        if (generation !== this.#generation || !this.#teamSelection?.state().visible) return
+        if (generation !== this.#generation || revision !== this.#teamSelectionRenderRevision || !this.#teamSelection?.state().visible) return
         for (const item of posed) {
           const selected = requests.find((candidate) => candidate.request.identity === item.identity)
           if (!selected) throw new Error("TF2 team-door pose identity differs from its authored request")
           this.#teamSelectionPoses.set(selected.panel, item)
+          this.#teamSelectionAnimations.set(selected.panel, { ...selected.state, sampledSeconds: selected.request.elapsedSeconds })
         }
       }
       const panels: readonly ModelPanelPass[] = authored.map((panel, index) => {
@@ -2543,9 +2542,10 @@ export class Tf2Application {
       const doorProfile = (globalThis as any).__playsrcProfile
       if (doorProfile?.captureTeamDoors === true) {
         const frames = doorProfile.teamDoorFrames ??= []
-        if (frames.length < 1024) frames.push({ at: performance.now(), now, milliseconds: result.milliseconds,
+        if (frames.length < 4096) frames.push({ at: performance.now(), now, milliseconds: result.milliseconds,
           panels: authored.map(panel => ({ name: panel.name, animation: panel.animation, sequence: panel.sequence,
             timing: this.#teamSelectionAnimations.get(panel.name),
+            cycle: this.#teamSelectionPoses.get(panel.name)?.cycle,
             matrices: Array.from(this.#teamSelectionPoses.get(panel.name)?.boneMatrices ?? []) })) })
       }
       this.#set({ teamSelectionModels: result.panels.map((panel) => `${panel.identity}:${panel.model}:${panel.skin}:${panel.primitives}`).join("|") })

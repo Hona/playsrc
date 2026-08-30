@@ -334,6 +334,7 @@ export type ModelPoseRequest = Readonly<{
   classSelection?: boolean
   controlPoint?: number
   modelPanel?: boolean
+  entityModelPanel?: boolean
   modelPanelReset?: boolean
   cloak?: ActorCloakState
   actorIdentity?: number
@@ -430,9 +431,11 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
       || (request.hudModel && (!request.modelPanel || !request.actorIdentity))
       || (request.worldItem !== undefined && typeof request.worldItem !== "boolean")
       || (request.modelPanel !== undefined && typeof request.modelPanel !== "boolean")
+      || (request.entityModelPanel !== undefined && typeof request.entityModelPanel !== "boolean")
+      || (request.entityModelPanel && (request.modelPanel || request.classSelection || request.itemModel || request.phase !== undefined || request.cloak || request.worldItem || request.handsOnlyViewmodel || request.controlPoint !== undefined || request.actorIdentity !== undefined || request.itemDefinition !== undefined || request.packedBody !== undefined))
       || (request.modelPanelReset !== undefined && typeof request.modelPanelReset !== "boolean")
       || ((request.classSelection || request.modelPanel) && ((request.itemModel !== undefined && (request.classSelection || !request.worldItem)) || request.handsOnlyViewmodel || request.phase !== undefined || request.cloak !== undefined))
-      || (request.modelPanelReset && !request.classSelection && !request.modelPanel)) {
+      || (request.modelPanelReset && !request.classSelection && !request.modelPanel && !request.entityModelPanel)) {
       throw new ProjectilePresentationError("MalformedFact", "model panel pose request")
     }
     if (!Number.isSafeInteger(request.identity) || request.identity < 1 || !request.model || !request.activity ||
@@ -462,7 +465,7 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
       throw new ProjectilePresentationError("MalformedFact", "model pose sample")
     }
     view.setBigUint64(at, sampleTick, true); at += 8
-    bytes[at] = request.controlPoint !== undefined ? 7 : request.classSelection ? 3 : request.modelPanel ? request.worldItem ? 6 : 4 : request.worldItem ? 5 : request.handsOnlyViewmodel ? 2 : request.itemModel === undefined ? 0 : 1
+    bytes[at] = request.entityModelPanel ? 8 : request.controlPoint !== undefined ? 7 : request.classSelection ? 3 : request.modelPanel ? request.worldItem ? 6 : 4 : request.worldItem ? 5 : request.handsOnlyViewmodel ? 2 : request.itemModel === undefined ? 0 : 1
     bytes[at + 1] = Number(request.attachmentsOnly ?? false)
     bytes[at + 2] = Number(request.fireView !== undefined)
     bytes[at + 3] = Number(request.modelPanelReset ?? false) | (Number(cloak !== undefined) << 1) | (Number(request.preparation ?? false) << 2) | (Number(request.hudModel ?? false) << 3)
