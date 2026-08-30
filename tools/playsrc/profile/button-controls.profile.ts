@@ -5,9 +5,8 @@ import { expect, guardStartupInput, test } from "./application-test"
 import { loadLocalConfig } from "../src/config"
 import { startupConsoleIdle, startupNativeReader } from "./native-startup"
 import { requireStartupNative } from "./static-startup-gate"
-import { summarizeFrameTimes } from "./profile-window"
 
-test("authored equipment, team and class controls survive the border correction", async ({ page, context }) => {
+test("authored equipment, team and class controls survive the border correction", async ({ page }) => {
   const local = await loadLocalConfig(), directory = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY!
   if (!directory) throw new Error("Use the checked button-controls profile runner")
   await mkdir(directory, { recursive: true })
@@ -59,33 +58,10 @@ test("authored equipment, team and class controls survive the border correction"
     await act(() => page.locator('.class-selection-layer [data-vgui-name="scout"]').hover())
     await expect.poll(async () => JSON.parse(await main.getAttribute("data-class-selection-animation") || "{}").model).toBe("models/player/scout.mdl")
     await capture("class-armed", ".class-selection-layer")
-    const cdp = await context.newCDPSession(page)
-    await cdp.send("Performance.enable")
-    const before = await cdp.send("Performance.getMetrics")
-    await admit()
-    const sampling = page.evaluate(async () => {
-      const frames: number[] = [], start = performance.now()
-      let previous = start
-      await new Promise<void>(resolve => requestAnimationFrame(function frame(now) {
-        frames.push(now - previous); previous = now
-        now - start >= 5000 ? resolve() : requestAnimationFrame(frame)
-      }))
-      return { milliseconds: performance.now() - start, frames }
-    })
-    for (let second = 0; second < 5; second += 1) {
-      await page.waitForTimeout(1000)
-      await admit()
-    }
-    const sample = await sampling
-    await admit()
-    const after = await cdp.send("Performance.getMetrics")
-    await cdp.detach()
-    await writeFile(path.join(directory, "control-sample.json"), JSON.stringify({ milliseconds: sample.milliseconds, frames: summarizeFrameTimes(sample.frames), before, after }))
     await act(() => page.keyboard.press("Digit1"))
     await expect(main).toHaveAttribute("data-class-selection-visible", "false")
-    await act(() => page.keyboard.press("Backquote"))
-    await act(() => entry.fill("disconnect"))
-    await act(() => entry.press("Enter"))
+    await act(() => page.keyboard.press("Escape"))
+    await act(() => page.locator('[data-vgui-name="DisconnectButton"]').click())
     await expect(main).toHaveAttribute("data-phase", "MainMenu")
     const generated = await readFile(new URL("../../../games/tf2/browser/src/ui-resources/configured.generated.ts", import.meta.url), "utf8")
     const input = JSON.parse(generated.split("export const configuredTf2UiResourceInput: unknown = ")[1]!)
