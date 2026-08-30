@@ -12,7 +12,7 @@ import { loadLocalConfig } from "../src/config"
 // native browser stage. Build these fixtures with simd-configured.test.ts first.
 const config = await loadLocalConfig(process.cwd())
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex")
-const index = JSON.parse(await readFile(path.join(config.sourceCacheDir, "simd-tests", hash(Buffer.from(process.cwd())).slice(0, 8), "comparison.json"), "utf8"))
+const index = JSON.parse(await readFile(path.join(config.sourceCacheDir, "simd-tests", hash(Buffer.from(path.resolve(process.cwd()))).slice(0, 8), "comparison.json"), "utf8"))
 const recordBytes = await readFile(index.path)
 if (hash(recordBytes) !== index.sha256) throw Error("SIMD comparison record changed")
 const inputRecord = JSON.parse(recordBytes.toString())
