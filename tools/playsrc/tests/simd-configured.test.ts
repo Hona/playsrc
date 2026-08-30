@@ -30,6 +30,7 @@ test.skipIf(!process.env.PLAYSRC_LOCAL_JOB_OWNER && process.env.RUN_CONFIGURED_S
   const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex")
   try {
     await run("native", ["test", "--locked", "-p", "playsrc-mp3", "--", "--include-ignored"])
+    await run("native-audio", ["test", "--locked", "-p", "playsrc-audio"])
     const input = await readFile(path.join(config.sourceCacheDir, "evidence/tf2-wasm-simd-performance/configured/cow1.mp3"))
     expect(hash(input)).toBe("6d5029641d1a058b5316d4fd49b7ee923ec6490bb5ce93e40fa25ccaa169aad5")
     const records = []

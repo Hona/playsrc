@@ -36,7 +36,6 @@
     "@playsrc/particle": "workspace:*",
     "@playsrc/rendering": "workspace:*",
     "@playsrc/settings": "workspace:*",
-    "@playsrc/vgui": "workspace:*",
-    "@playsrc/wasm": "workspace:*"
+    "@playsrc/vgui": "workspace:*"
   }
 }

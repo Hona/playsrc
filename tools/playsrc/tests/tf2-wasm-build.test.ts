@@ -6,7 +6,8 @@ import { audioWasmRustFlags, threadedWasmRustFlags } from "../src/tf2-wasm-build
 
 test("threaded WASM flags retain memory contracts and encode paths with spaces as single arguments", () => {
   const flags = threadedWasmRustFlags("/build one/app", "/build one/cargo", "/build one/rust")
-  expect(flags).toContain("-Ctarget-feature=+atomics,+bulk-memory,+simd128")
+  expect(flags).toContain("-Ctarget-feature=+atomics,+bulk-memory")
+  expect(flags.some(flag => flag.includes("simd128"))).toBe(false)
   expect(flags).toContain("-Clink-arg=--shared-memory")
   expect(flags).toContain("-Clink-arg=--max-memory=4294967296")
   expect(flags).toContain("--remap-path-prefix=/build one/app=/playsrc")
