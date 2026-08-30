@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { parseLocalPreparationStage, prepareLocalStage } from "../src/prepare-local-stage"
-import { localJobCommand } from "../src/local-job"
+import { localJobCommand } from "../src/local-job-command"
 
 test("bounded local jobs select only one declared preparation stage, never arbitrary compiler arguments", () => {
   for (const args of [["wasm"], ["producer"], ["resources", "pl_upward"]]) {

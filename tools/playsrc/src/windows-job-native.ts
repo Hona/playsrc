@@ -3,6 +3,7 @@ import { readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { repositoryRoot } from "./config"
 import { processIsAlive } from "./profile-lock"
+import { localJobCommand } from "./local-job-command"
 
 export type NativeDialog = {
   decision: string; error: string | null; displayedAt: number; decidedAt: number; dismissedAt: number
@@ -54,7 +55,6 @@ export type NativeJobRequest = {
 /** Rechecked by the native -File entry too: a request cannot relabel a profile
  * or replace a background command with an arbitrary executable/script. */
 export async function validateNativeJobRequest(request: NativeJobRequest) {
-  const { localJobCommand } = await import("./local-job")
   const plan = localJobCommand(request.invocation)
   const command = plan.interactive
     ? [process.execPath, path.join(repositoryRoot, "tools/playsrc/src/profile-runner.ts"), "--application-root", request.cwd, ...plan.command.slice(1)]
@@ -122,7 +122,6 @@ export async function borrowedWindowsJobLock(lockPath: string, invocation: reado
     ? consent.invocation?.[0] === "test" && !path.relative(process.cwd(), invocation.testFile).startsWith("..")
       && (consent.invocation.length === 1 || consent.invocation.slice(1).some(file => path.resolve(file) === path.resolve(invocation.testFile)))
     : JSON.stringify(consent.invocation) === JSON.stringify(invocation)
-  const { localJobCommand } = await import("./local-job")
   const plan = localJobCommand(consent.invocation)
   if (consent.schema !== "playsrc-native-job-v1" || !invocationMatches || consent.helperPid !== process.ppid
     || path.join(consent.run, "ownership.json") !== file || held.pid !== consent.ownerPid || held.token !== consent.lockToken

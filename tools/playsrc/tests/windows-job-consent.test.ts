@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test"
-import { readFile } from "node:fs/promises"
+import { readFile, mkdtemp, writeFile, rm } from "node:fs/promises"
+import os from "node:os"
 import path from "node:path"
 import { approvedNativeDecision, validateNativeJobReceipt, validateNativeJobRequest, type NativeDialog, type NativeJobReceipt } from "../src/windows-job-native"
-import { localJobCommand } from "../src/local-job"
+import { localJobCommand } from "../src/local-job-command"
 import { repositoryRoot } from "../src/config"
 
 // Synthetic receipt tests, NOT evidence of displayed UI or task authorization.
@@ -75,6 +76,23 @@ test("direct native entry cannot relabel profiles, substitute commands or accept
     await expect(validateNativeJobRequest({ ...request, invocation: ["unknown"] })).rejects.toThrow()
   }
 })
+
+test("classification and native validation CLI entrypoints finish without importing their own pending main", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "playsrc-job-plan-"))
+  try {
+    const file = path.join(directory, "request.json")
+    await writeFile(file, JSON.stringify({ invocation: ["diagnostic", "0", "0"], command: [process.execPath, "tools/playsrc/src/local-job-diagnostic.ts", "0", "0"], cwd: repositoryRoot }))
+    for (const args of [["plan", "diagnostic", "0", "0"], ["validate-native", file]]) {
+      const child = Bun.spawn([process.execPath, path.join(repositoryRoot, "tools/playsrc/src/local-job.ts"), ...args], { stdout: "pipe", stderr: "pipe", windowsHide: true })
+      const timer = setTimeout(() => child.kill(), 3000)
+      try {
+        const [output, error, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+        expect({ code, error }).toEqual({ code: 0, error: "" })
+        expect(JSON.parse(output).interactive).toBe(false)
+      } finally { clearTimeout(timer) }
+    }
+  } finally { await rm(directory, { recursive: true, force: true }) }
+}, 10_000)
 
 test.skipIf(process.platform !== "win32")("the actual Windows PowerShell bridge keeps zero/one/many arguments flat and rejects malformed arrays", async () => {
   const child = Bun.spawn(["powershell.exe", "-NoProfile", "-NonInteractive", "-File", path.join(import.meta.dir, "fixtures/windows-job-arguments.ps1"), "-Bridge", path.resolve(import.meta.dir, "../windows-job.ps1")], { windowsHide: true, stdout: "pipe", stderr: "pipe" })
