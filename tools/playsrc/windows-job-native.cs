@@ -32,7 +32,8 @@ public static class PlaysrcNativeJob {
  public sealed class Receipt {
   public string schema="playsrc-native-job-v1", job, task, run, action, lockToken, outcome="failed", error;
   public string[] invocation;
-  public int ownerPid, helperPid, sessionId, childPid, exitCode;
+  public int ownerPid, helperPid, sessionId, childPid;
+  public int? exitCode;
   public long ownerCreatedAt, helperCreatedAt, childCreatedAt, startedAt, finishedAt, commandStartedAt, teardownAt;
   public long helperPeakPrivateBytes;
   public bool treeEmpty;
@@ -267,6 +268,7 @@ public static class PlaysrcNativeJob {
    if(child.process!=IntPtr.Zero && !resumed)TerminateProcess(child.process,1);
    if(job!=IntPtr.Zero){Check(TerminateJobObject(job,1),"Terminate owned descendants");var wait=Stopwatch.StartNew();while(Active(job)>0 && wait.ElapsedMilliseconds<4000)Thread.Sleep(20);receipt.treeEmpty=Active(job)==0;CloseHandle(job);}
    else receipt.treeEmpty=child.process==IntPtr.Zero;
+   if(child.process!=IntPtr.Zero && WaitForSingleObject(child.process,0)==0){uint exit;if(GetExitCodeProcess(child.process,out exit))receipt.exitCode=(int)exit;}
    if(child.thread!=IntPtr.Zero)CloseHandle(child.thread);if(child.process!=IntPtr.Zero)CloseHandle(child.process);
    if(log!=IntPtr.Zero && log!=new IntPtr(-1))CloseHandle(log);if(input!=IntPtr.Zero && input!=new IntPtr(-1))CloseHandle(input);
    if(attributesInitialized)DeleteProcThreadAttributeList(attributes);
