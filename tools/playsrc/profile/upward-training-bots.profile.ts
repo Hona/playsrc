@@ -482,7 +482,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const diagnosticMinimumTick = testInfo.project.metadata.diagnosticMinimumTick as number | undefined
   if (sustained && !capturePlan.retirementOnly) {
     profilePhases.enter("sustained-koth")
-    await observeSustainedKoth({ page, browserCdp, directory, checkNativeWindow, sourceFingerprint, sourceCommit: sourceCommit.stdout.trim() })
+    await observeSustainedKoth({ page, browserCdp, directory, checkNativeWindow, sourceFingerprint, sourceCommit: sourceCommit.stdout.trim(), diagnosticSeconds: capturePlan.diagnosticSeconds })
   }
   if (diagnosticMinimumTick !== undefined) {
     if (deliveryMode !== "rpc" || !Number.isSafeInteger(diagnosticMinimumTick)) throw new Error("Tick-targeted sampling is diagnostic only")
@@ -1331,6 +1331,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const report = {
     nativeAdmission: nativeRecords(), replacement, nodeBuilds: measurement.nodeBuilds ?? [], geometry, pipelinePreparation: measurement.pipelinePreparation,
     schema: "playsrc-tf2-upward-training-bots-profile-v4", label, headed: true, target, entry, launch, capturePlan, capturePlanArtifact,
+    ...(sustained ? { sustainedAcceptance: !capturePlan.diagnosticSeconds, diagnosticContextSeconds: capturePlan.diagnosticSeconds ?? null } : {}),
     sourceFingerprint,
     roster: measurement.roster.map((bot: any) => ({ identity: bot.identity, class: bot.class, team: bot.team, difficulty: bot.difficulty })),
     activeBots: measurement.roster.length, teams: { red: measurement.scoreboard.red.playerCount, blue: measurement.scoreboard.blue.playerCount },

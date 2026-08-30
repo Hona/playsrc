@@ -144,3 +144,12 @@ test("retirement correctness is explicit, unsampled and cannot be called sustain
   expect(() => validateUpwardCapturePlan(plan)).not.toThrow()
   expect(() => upwardCapturePlan({ PROFILE_KOTH_RETIREMENT_ONLY: "1" })).toThrow()
 })
+
+test("short freeze diagnosis is labelled separately and never changes the90s final gate", () => {
+  const input = { PROFILE_KOTH_SUSTAINED: "1", PROFILE_MAP_TARGET: "koth_sawmill", PROFILE_KOTH_DIAGNOSTIC: "1", PROFILE_SAMPLE_SECONDS: "5", PROFILE_UPWARD_TRAINING_INTERACTION: "1" }
+  const diagnostic = upwardCapturePlan(input)
+  expect(diagnostic).toMatchObject({ sustainedSeconds: 90, diagnosticSeconds: 15, sampleSeconds: 5, workerCpu: "required", interaction: "movement-weapon" })
+  expect(() => validateUpwardCapturePlan(diagnostic)).not.toThrow()
+  expect(upwardCapturePlan({ ...input, PROFILE_KOTH_DIAGNOSTIC: "0" })).not.toHaveProperty("diagnosticSeconds")
+  expect(() => upwardCapturePlan({ ...input, PROFILE_KOTH_RETIREMENT_ONLY: "1" })).toThrow()
+})
