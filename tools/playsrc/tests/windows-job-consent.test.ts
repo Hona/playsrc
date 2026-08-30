@@ -44,6 +44,6 @@ test("all delegated workloads use native consent; readback does not create dialo
   expect(native).toContain("wparam.ToInt32()==100?\"approved\":\"denied\"")
   expect(native).toContain("if(notification==0){ShowWindow(window,5);SetForegroundWindow(window);}")
   expect(native).not.toMatch(/BringWindowToTop|BlockInput|SendInput|SwitchDesktop/)
-  expect(localJobCommand(["diagnostic", "250", "0"]).command[0]).toBe("-e")
+  expect(localJobCommand(["diagnostic", "250", "0"]).command[0]).toBe("tools/playsrc/src/local-job-diagnostic.ts")
   for (const args of [["--ready", "test"], ["diagnostic", "30001", "0"], ["diagnostic", "1", "2"]]) expect(() => localJobCommand(args)).toThrow()
 })

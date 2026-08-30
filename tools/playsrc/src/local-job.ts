@@ -60,7 +60,7 @@ export function localJobCommand(args: readonly string[]): { command: string[]; i
     return { command: ["tools/playsrc/src/prepare-local-stage.ts", ...options], interactive: false }
   }
   if (kind === "diagnostic" && options.length === 2 && /^\d{1,5}$/.test(options[0]!) && Number(options[0]) <= 30_000 && /^[01]$/.test(options[1]!)) {
-    return { command: ["-e", `console.log('native diagnostic workload');setTimeout(()=>process.exit(${options[1]}),${options[0]})`], interactive: false }
+    return { command: ["tools/playsrc/src/local-job-diagnostic.ts", ...options], interactive: false }
   }
   throw new Error("Expected test [files...], build <map>, build-stage wasm|producer|resources <map>, or profile <normal profile name> [normal profiler options]")
 }

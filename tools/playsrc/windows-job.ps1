@@ -120,7 +120,7 @@ if ($Action -notin 'Run','Build','BuildStage','Test','Diagnostic') {
     [PlaysrcReadbackGuard]::Stage='artifact-enumeration'
     if (!$result -or $result.schema -ne 'playsrc-local-job-result-v1') { throw 'This task has no completed result to collect' }
     $files = @(@{name='job/result.json';path=(Join-Path $result.run 'result.json')})
-    foreach($record in 'identity.json','consent.json','native-request.json','native-helper.json','native-result.json') {
+    foreach($record in 'identity.json','consent.json','consent-displayed.json','completion-displayed.json','dispatch.json','native-request.json','native-helper.json','native-result.json','native-fault.json','failure-native-request.json','failure-native-helper.json','failure-native-result.json','failure-native-fault.json','failure-completion-displayed.json') {
       $file=Join-Path $result.run $record
       if(Test-Path -LiteralPath $file){$files+=@{name="job/$record";path=$file}}
     }
@@ -228,7 +228,9 @@ if($JobArguments -eq '[]') {
 }
 $arguments = ($workload|ForEach-Object {Quote $_}) -join ' '
 $ownerLog=[IO.Path]::ChangeExtension($log,'owner.json')
-$command = "`$ErrorActionPreference='Stop'; `$ProgressPreference='SilentlyContinue'; Set-Location $(Quote $root); @{taskPriority=5;processPriority=[string][Diagnostics.Process]::GetCurrentProcess().PriorityClass;pid=`$PID} | ConvertTo-Json -Compress | Set-Content -Encoding UTF8 $(Quote $policy); try { . $(Quote (Join-Path $root 'tools/playsrc/windows-job-console.ps1')) -Receipt $(Quote $ownerLog); & $(Quote $bun) tools/playsrc/src/local-job.ts run $(Quote $Job) --task $(Quote $name) $arguments > $(Quote $log) 2> $(Quote "$log.bootstrap.log"); exit `$LASTEXITCODE } catch { `$_ | Out-String | Out-File -LiteralPath $(Quote $log) -Append; exit 1 }"
+# Windows PowerShell 5 turns redirected native stderr into ErrorRecords. Queue
+# progress is not a terminating exception; the actual native exit code owns it.
+$command = "`$ErrorActionPreference='Stop'; `$ProgressPreference='SilentlyContinue'; Set-Location $(Quote $root); @{taskPriority=5;processPriority=[string][Diagnostics.Process]::GetCurrentProcess().PriorityClass;pid=`$PID} | ConvertTo-Json -Compress | Set-Content -Encoding UTF8 $(Quote $policy); try { . $(Quote (Join-Path $root 'tools/playsrc/windows-job-console.ps1')) -Receipt $(Quote $ownerLog); `$ErrorActionPreference='Continue'; & $(Quote $bun) tools/playsrc/src/local-job.ts run $(Quote $Job) --task $(Quote $name) $arguments > $(Quote $log) 2> $(Quote "$log.bootstrap.log"); `$code=`$LASTEXITCODE; `$ErrorActionPreference='Stop'; exit `$code } catch { `$_ | Out-String | Out-File -LiteralPath $(Quote $log) -Append; exit 1 }"
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
 New-Item -ItemType File -Path $log | Out-Null
 $taskAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand $encoded" -WorkingDirectory $root

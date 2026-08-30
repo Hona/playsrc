@@ -43,9 +43,11 @@ export async function runWindowsNativeJob(request: {
   invocation: readonly string[]
   lockPath: string; lockToken: string; deadline: number; diagnostic: boolean
   preflightFailure: string | null
+  notificationFailure?: string
 }, env: NodeJS.ProcessEnv, verifySource: () => Promise<void>): Promise<NativeJobReceipt> {
-  const file = path.join(request.run, "native-request.json")
-  await writeFile(file, JSON.stringify({ ...request, executable: request.command[0], arguments: request.command.slice(1), ownerPid: process.pid,
+  const recordPrefix = request.notificationFailure ? "failure-" : ""
+  const file = path.join(request.run, `${recordPrefix}native-request.json`)
+  await writeFile(file, JSON.stringify({ ...request, recordPrefix, preflightFailure: request.notificationFailure ?? request.preflightFailure, executable: request.command[0], arguments: request.command.slice(1), ownerPid: process.pid,
     manifest: path.join(repositoryRoot, "tools/playsrc/windows-job-native.manifest") }), { flag: "wx" })
   const spawnedAt = Date.now()
   const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", path.join(repositoryRoot, "tools/playsrc/windows-job-native.ps1"), "-Request", file], {
@@ -78,11 +80,19 @@ export async function runWindowsNativeJob(request: {
   try {
     const code = await new Promise<number | null>(resolve => child.once("close", resolve))
     await verification
-    await writeFile(path.join(request.run, "native-helper.json"), JSON.stringify({ pid: child.pid ?? null, spawnedAt, code, failure: failure?.message ?? null, diagnostic, output }), { flag: "wx" })
+    await writeFile(path.join(request.run, `${recordPrefix}native-helper.json`), JSON.stringify({ pid: child.pid ?? null, spawnedAt, code, failure: failure?.message ?? null, diagnostic, output }), { flag: "wx" })
     if (failure || code !== 0) throw failure ?? new Error(`Native job helper failed (${code}): ${diagnostic}`)
-    const retained = JSON.parse(await readFile(path.join(request.run, "native-result.json"), "utf8"))
+    const retained = JSON.parse(await readFile(path.join(request.run, `${recordPrefix}native-result.json`), "utf8"))
     if (JSON.stringify(retained) !== JSON.stringify(JSON.parse(output.trim()))) throw new Error("Native helper output differs from retained receipt")
     return validateNativeJobReceipt(retained, { ...request, ownerPid: process.pid, helperPid: child.pid!, spawnedAt })
+  } catch (error) {
+    // The exited helper's non-inheritable kill-on-close Job Object has stopped
+    // its tree. Keep the FIFO lock and attempt ONE failure-only notification;
+    // this request cannot enter consent or dispatch a replacement workload.
+    if (!request.notificationFailure && Date.now() + 5_000 < request.deadline) {
+      return await runWindowsNativeJob({ ...request, notificationFailure: String(error) }, env, async () => {})
+    }
+    throw error
   } finally { clearTimeout(timer); process.off("SIGINT", cancel); process.off("SIGTERM", cancel) }
 }
 

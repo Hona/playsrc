@@ -62,8 +62,10 @@ created suspended, assigned to an owned kill-on-close Windows Job Object, then
 resumed only after approval. Completion is shown only after the owned tree is
 empty and source verification has finished: **completed**, **failed**,
 **cancelled** or **denied**, with “hands-off is no longer needed for this job.”
-The completion message also dismisses after three seconds. Native receipts
-retain notification failures even when a desktop cannot display completion.
+The completion message also dismisses after three seconds. A crashed helper
+never retries the workload: after its kill-on-close teardown, the same owner
+attempts one bounded failure-only notification. Native receipts retain both
+the original failure and any inability to display completion.
 
 ## Readback and cancellation
 
@@ -92,7 +94,8 @@ completed result. Never delete another task's lock, browser or user processes.
 powershell.exe -NoProfile -NonInteractive -File tools/playsrc/windows-job.ps1 -Job <job> -Action Diagnostic -Milliseconds 250 -DiagnosticExit 0
 # Native control delivery against only an exact diagnostic dialog:
 powershell.exe -NoProfile -NonInteractive -File tools/playsrc/windows-job-ui-test.ps1 -Job <job> -Case approve
-# Cases: deny, close, escape, race, timeout, failure, cancel, queue.
+# Cases: deny, close, escape, race, timeout, failure, cancel, queue,
+#        crash (before decision), crash-running (owned diagnostic child).
 ```
 
 The verifier records actual controls/pixels and asserts outcomes, immediate
