@@ -14,7 +14,7 @@ export function sustainedKothTarget(value: string | undefined) {
 /** Lightweight bounded records, not a renderer/Worker wrapper or a GC trigger. */
 export function installSustainedObservation(host: any = globalThis) {
   const limit = 16384
-  let active = false, started = 0, ended = 0, dropped = 0, frame = 0, raf = 0
+  let active = false, started = 0, ended = 0, dropped = 0, raf = 0
   const frames: any[] = [], callbacks: number[] = [], ticks: any[] = [], inputs: any[] = [], lifecycle: any[] = []
   let observer: MutationObserver | undefined, lastFrame = 0, lastTick = 0, missedFrames = 0
   const state = () => host.document.querySelector("main")?.dataset ?? {}

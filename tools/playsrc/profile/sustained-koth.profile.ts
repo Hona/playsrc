@@ -78,6 +78,8 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
     await check(); await chooseTf2Team(page, "red")
     await expect(main).toHaveAttribute("data-phase", "Ready", { timeout: 20_000 })
     await expect(main).toHaveAttribute("data-bot-count", "23", { timeout: 15_000 })
+    expect(JSON.parse(await main.getAttribute("data-local-match-settings") ?? "null")).toMatchObject({ entry: "create-server", mapIdentity: target,
+      configuration: { quota: 23, maximumPlayers: 24, difficulty: 1, mode: "normal", offlinePractice: false } })
     await replay.ready(); await replay.mark(0); await replay.mark(1); replayArtifact = await replay.stop()
     if (!replayArtifact.complete || !replayArtifact.entropy) throw new Error("Authenticated startup/entropy capture incomplete")
     const capturedEntropy = await readFile(path.join(directory, replayArtifact.entropy.file))
