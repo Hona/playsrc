@@ -17,9 +17,9 @@ test("idle, same-sequence commands, interrupted changes and recreated panels can
     { ...panel, animationRevision: 2 },
     { ...panel, modelRevision: 2 },
   ]) {
-    const step = teamModelPlayback(done, next, 2, 1)
+    const step = teamModelPlayback(done, next, 1.02, 1)
     expect(step.sample).toBe(true)
-    expect(step.elapsed).toBe(0)
+    expect(step.elapsed).toBeCloseTo(next.modelRevision === panel.modelRevision ? 0.02 : 0, 8)
     expect(step.previousElapsed).toBe(0)
   }
   expect(teamModelPlayback(undefined, { ...panel, sequence: "idle" }, 0, 0).sample).toBe(true)
