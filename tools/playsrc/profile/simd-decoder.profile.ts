@@ -31,7 +31,7 @@ test("headed browser executes exact scalar and SIMD decoder kernels", async ({ p
   const directory = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY!
   const native = await startupNativeReader(page, config.sourceCacheDir)
   guardStartupInput(page, async () => requireStartupNative(await native.read()))
-  let result: any, pixels: Buffer
+  let result: any, pixels: Buffer | undefined, failure: string | null = null
   const admissions: unknown[] = []
   try {
     const admission = await native.read(); requireStartupNative(admission); admissions.push(admission)
@@ -53,14 +53,17 @@ test("headed browser executes exact scalar and SIMD decoder kernels", async ({ p
           const pointer = e.test_input_alloc(input.length)
           new Uint8Array(e.memory.buffer, pointer, input.length).set(input)
           const started = performance.now(), count = e.test_decode(pointer, input.length)
-          return { milliseconds: performance.now() - started, count }
+          const milliseconds = performance.now() - started
+          if (count !== 73728) throw Error("Decoded sample count changed")
+          return { milliseconds, count }
         }
         const first = invoke()
         const pcm = new Uint8Array(e.memory.buffer, e.test_pcm_pointer(), first.count * 2).slice()
         const pcmSha256 = await digest(pcm)
         const record = { variant: entry.variant, moduleSha256: await digest(binary), valid, compileMilliseconds: compiled-began, instantiateMilliseconds: instantiated-compiled,
           firstDecodeMilliseconds: first.milliseconds, samples: first.count, pcmSha256, linearBytes: e.memory.buffer.byteLength, batches: [] as number[] }
-        records.push(record); states.push({ invoke, record, memory: e.memory as WebAssembly.Memory })
+        records.push(record); states.push({ invoke, record, memory: e.memory as WebAssembly.Memory,
+          pcm: () => new Uint8Array(e.memory.buffer, e.test_pcm_pointer(), first.count * 2).slice() })
         if (entry.variant === "simd") {
           const samples = new Int16Array(pcm.buffer), canvas = document.querySelector("canvas")!, context = canvas.getContext("2d")!
           context.strokeStyle="#66dfb7"; context.beginPath()
@@ -78,7 +81,7 @@ test("headed browser executes exact scalar and SIMD decoder kernels", async ({ p
         }
         await new Promise<void>(resolve=>requestAnimationFrame(()=>resolve()))
       }
-      for(const state of states){const record=state.record,values=[...record.batches].sort((a,b)=>a-b);Object.assign(record,{median:values[Math.floor(values.length/2)],p95:values[Math.floor(values.length*.95)],maximum:values.at(-1),finalLinearBytes:state.memory.buffer.byteLength})}
+      for(const state of states){const record=state.record,values=[...record.batches].sort((a,b)=>a-b);Object.assign(record,{median:values[Math.floor(values.length/2)],p95:values[Math.floor(values.length*.95)],maximum:values.at(-1),finalLinearBytes:state.memory.buffer.byteLength,finalPcmSha256:await digest(state.pcm())})}
       document.querySelector("#result")!.textContent=records.map((r:any)=>`${r.variant}: median ${r.median.toFixed(4)} ms, p95 ${r.p95.toFixed(4)} ms; ${r.samples} exact PCM samples`).join("\n")
       return { records, sampleMilliseconds:performance.now()-sampleStart, userAgent:navigator.userAgent, platform:navigator.platform, hardwareConcurrency:navigator.hardwareConcurrency,
         browserEvidence:true, sustainedGameplayEvidence:false, scope:"Configured decoder kernel; host input allocation/copy excluded identically, decoder allocations and output replacement/free included. No gameplay or freeze claim." }
@@ -87,12 +90,18 @@ test("headed browser executes exact scalar and SIMD decoder kernels", async ({ p
     for (const record of result.records) {
       expect(record.samples).toBe(73728)
       expect(record.pcmSha256).toBe("b1e43ccf681c3529aad850231599216cfd55778a27bb559b8859917be486ee42")
+      expect(record.finalPcmSha256).toBe(record.pcmSha256)
     }
     pixels = await page.screenshot()
-  } finally { await native.close() }
-  await profileArtifact(async () => {
-    await writeFile(path.join(directory, "simd-decoder.json"), JSON.stringify({ commit, inputRecord, result, admissions }, null, 2))
-    await writeFile(path.join(directory, "simd-decoder.png"), pixels)
-    await testInfo.attach("simd-decoder", { body: pixels, contentType: "image/png" })
-  })
+  } catch (error) { failure = String(error); throw error }
+  finally {
+    await native.close()
+    await profileArtifact(async () => {
+      await writeFile(path.join(directory, "simd-decoder.json"), JSON.stringify({ commit, inputRecord, result: result ?? null, admissions, failure }, null, 2))
+      if (pixels) {
+        await writeFile(path.join(directory, "simd-decoder.png"), pixels)
+        await testInfo.attach("simd-decoder", { body: pixels, contentType: "image/png" })
+      }
+    })
+  }
 })
