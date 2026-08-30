@@ -16,6 +16,7 @@ function baseCapturePlan(environment: Readonly<NodeJS.ProcessEnv>) {
     target: sustainedKoth ? environment.PROFILE_MAP_TARGET as "koth_sawmill" | "koth_lakeside_final" : createServer ? "ctf_2fort" as const : "pl_upward" as const,
     ...(sustainedKoth ? { sustainedSeconds: 90 as const } : {}),
     ...(retirementOnly ? { retirementOnly: true as const } : {}),
+    ...(sustainedKoth && !retirementOnly ? { preludeTelemetry: "ready-to-live-light-v1" as const } : {}),
     entry: createServer ? "create-server" as const : "training" as const,
     exerciseClasses, acceptance, stockOnly,
     combat: !stockOnly && environment.PROFILE_PARTICLE_COMBAT === "1",

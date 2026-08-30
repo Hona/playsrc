@@ -46,12 +46,12 @@ const LOAD_TIMINGS = Object.freeze({
   runtimeMapMilliseconds: 0,
   collisionSetupMilliseconds: 0,
   gameSetupMilliseconds: 0,
-  presentationBundleMilliseconds: 0,
-  presentationModelsMilliseconds: 0,
-  presentationTexturesMilliseconds: 0,
-  presentationParticlesMilliseconds: 0,
-  presentationEnvironmentMilliseconds: 0,
-  presentationSerializationMilliseconds: 0,
+  presentationBundleMilliseconds: 1,
+  presentationModelsMilliseconds: 2,
+  presentationTexturesMilliseconds: 3,
+  presentationParticlesMilliseconds: 4,
+  presentationEnvironmentMilliseconds: 5,
+  presentationSerializationMilliseconds: 6,
   textureDecoderRequests: 0,
   textureMetadataInspections: 0,
   modelCacheHits: 0,
@@ -567,6 +567,9 @@ describe("TF2 Worker transport ownership", () => {
     expect(staged.cache).toBe("stored")
     expect(staged.presentationCache).toBe("stored")
     expect(staged.presentationKey).toBe(await presentationIdentity(KEY))
+    expect(staged.timings).toMatchObject({ presentationBundleMilliseconds: 1, presentationModelsMilliseconds: 2,
+      presentationTexturesMilliseconds: 3, presentationParticlesMilliseconds: 4, presentationEnvironmentMilliseconds: 5,
+      presentationSerializationMilliseconds: 6 })
     expect(bsp.byteLength).toBe(0)
     expect(source.sections[0]!.subarray(0, 3)).toEqual(Uint8Array.from([5, 6, 7]))
     expect(worker.requests[0]).toMatchObject({ configurationSha256: source.sha256, configurationBytes: source.byteLength })
