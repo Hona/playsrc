@@ -1297,16 +1297,21 @@ export class Tf2Application {
     const generation = Number(video.dataset.startupMediaGeneration ?? 0) + 1
     video.dataset.startupMediaGeneration = String(generation)
     const chronology: unknown[] = []
-    const observe = (event: string) => {
+    let firstFrame: number | undefined
+    const observe = (event: string, frame?: { mediaTime: number; presentedFrames: number }) => {
       if (chronology.length === 16) chronology.shift()
       chronology.push({ event, at: Math.round(performance.now()), currentTime: video.currentTime, paused: video.paused,
+        ...(frame ? { frame } : {}),
         ...startupMetadataFacts(video, descriptor.browserRepresentation, generation, video.currentSrc === url) })
       this.#presentationRoot.dataset.startupMediaProbe = JSON.stringify({ build: __PLAYSRC_APPLICATION_BUILD__, sha256: descriptor.browserRepresentation.sha256, chronology })
     }
     const mediaEvents = ["loadedmetadata", "durationchange", "canplay", "playing", "waiting", "stalled", "error", "abort", "emptied"]
     const mediaEvent = (event: Event) => observe(event.type)
     for (const event of mediaEvents) video.addEventListener(event, mediaEvent)
-    const removeMediaObservation = () => { for (const event of mediaEvents) video.removeEventListener(event, mediaEvent) }
+    const removeMediaObservation = () => {
+      for (const event of mediaEvents) video.removeEventListener(event, mediaEvent)
+      if (firstFrame !== undefined) video.cancelVideoFrameCallback?.(firstFrame)
+    }
     const completed = () => events.completed()
     const failed = () => events.failed(video.error ? `MediaError:${video.error.code}` : "Startup media failed")
     video.controls = false
@@ -1321,6 +1326,7 @@ export class Tf2Application {
       observe("load-request")
       await loadStartupMetadata(video, url, this.#operation.signal)
       validateStartupMetadata(video, descriptor.browserRepresentation, generation, video.currentSrc === url)
+      firstFrame = video.requestVideoFrameCallback?.((_now, frame) => observe("first-presented-frame", { mediaTime: frame.mediaTime, presentedFrames: frame.presentedFrames }))
     } catch (error) {
       observe("preparation-failed")
       removeMediaObservation()
