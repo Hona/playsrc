@@ -1,7 +1,7 @@
 /** Serializable, opt-in API lifecycle accounting. No GPU object is retained by
  * a counter. Returned texture objects are not evidence of physical residency:
  * validation, implicit GC, device loss and driver retirement are not measured. */
-export function installGpuTextureAccounting(host: any = globalThis, traceOwners = false) {
+export function installGpuTextureAccounting(host: any = globalThis, traceOwners: boolean | "attachments" = false) {
   if (host.__playsrcGpuTextureAccounting) return host.__playsrcGpuTextureAccounting as ReturnType<typeof totalState>
   type FormatTotal = { textures: number; knownBytes: number; unknownByteTextures: number }
   const total = () => ({ textures: 0, knownBytes: 0, unknownByteTextures: 0,
@@ -11,12 +11,15 @@ export function installGpuTextureAccounting(host: any = globalThis, traceOwners 
     live: total(), created: total(), destroyedTextures: 0, peakKnownBytes: 0,
     writeTextureCalls: 0, writeTextureSourceBytes: 0 })
   const state = totalState()
-  const allocations = new WeakMap<object, { format: string; bytes: number | null; compressed: boolean; id: number; owner: string }>()
+  const allocations = new WeakMap<object, { format: string; bytes: number | null; compressed: boolean; id: number; owner: string; usage: number }>()
   const owners = { records: [] as any[], dropped: 0 }
   if (traceOwners) host.__playsrcTextureOwners = owners
   let ordinal = 0
-  const recordOwner = (record: object) => {
+  const recordOwner = (record: { kind: string; usage?: number; [key: string]: unknown }) => {
     if (!traceOwners) return
+    // Whole-soak ownership evidence needs attachment creation/retirement, not
+    // per-frame upload/pass records. Aggregate upload counters remain intact.
+    if (traceOwners === "attachments" && (!(Number(record.usage) & 16) || !["create", "destroy"].includes(record.kind))) return
     if (owners.records.length < 16384) owners.records.push({ at: performance.now(), ...record })
     else owners.dropped++
   }
@@ -64,7 +67,7 @@ export function installGpuTextureAccounting(host: any = globalThis, traceOwners 
       bytes! += Math.ceil(width / layout[0]) * Math.ceil(height / layout[1]) * layout[2] * depth * texture.sampleCount
     }
     if (bytes !== null && (!Number.isSafeInteger(bytes) || bytes < 0)) bytes = null
-    const record = { format, bytes, compressed: layout !== undefined && layout[0] > 1, id: ++ordinal, owner: texture.label || "unlabelled" }
+    const record = { format, bytes, compressed: layout !== undefined && layout[0] > 1, id: ++ordinal, owner: texture.label || "unlabelled", usage: texture.usage }
     allocations.set(texture, record)
     add(state.live, record, 1); add(state.created, record, 1)
     state.peakKnownBytes = Math.max(state.peakKnownBytes, state.live.knownBytes)
@@ -85,7 +88,7 @@ export function installGpuTextureAccounting(host: any = globalThis, traceOwners 
     recordOwner({ kind: "upload", id: record?.id ?? null, bytes: args[1].byteLength })
     return value
   } })
-  if (traceOwners && host.GPUTexture.prototype.createView && host.GPUCommandEncoder?.prototype.beginRenderPass) {
+  if (traceOwners === true && host.GPUTexture.prototype.createView && host.GPUCommandEncoder?.prototype.beginRenderPass) {
     const views = new WeakMap<object, { id: number; owner: string }>()
     const view = host.GPUTexture.prototype.createView, pass = host.GPUCommandEncoder.prototype.beginRenderPass
     host.GPUTexture.prototype.createView = function (...args: any[]) {

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import { requireSustainedBudget } from "../profile/sustained-koth"
 import { upwardCapturePlan, validateUpwardCapturePlan } from "../profile/upward-capture-plan"
 import { profileMinimumRemainingMilliseconds } from "../src/profile-runner"
-import { SUSTAINED_KOTH, checkSustainedObservation, sustainedGcEvidence, sustainedTrends, assertMatchingSustainedTransitionHistories } from "../profile/sustained-koth-evidence"
+import { SUSTAINED_KOTH, checkSustainedObservation, sustainedGcEvidence, sustainedTrends, assertMatchingSustainedTransitionHistories, liveSustainedAttachments } from "../profile/sustained-koth-evidence"
 
 test("sustained admission never truncates the 90 second soak to fit", () => {
   for (const budget of [NaN, 90_000, 119_999]) expect(() => requireSustainedBudget(budget)).toThrow()
@@ -15,6 +15,13 @@ const observation = (at = 0) => ({ at, generation: "1", tick: String(Math.floor(
   bots: Array.from({ length: 23 }, (_, index) => ({ identity: index + 2, team: 2 + index % 2, class: 1 + index % 9, shots: 0 })),
   round: { state: 4, waitingForPlayers: false, inSetup: false }, heap: { usedJSHeapSize: 1000 }, losses: [],
   gpuApi: { live: { knownBytes: 100 }, created: { knownBytes: 100 }, writeTextureSourceBytes: 100 } })
+
+test("native attachment lifetime joins keep old survivors distinct from new menu targets", () => {
+  const records = [{ kind: "create", id: 1 }, { kind: "create", id: 2 }, { kind: "destroy", id: 1 }, { kind: "create", id: 3 }]
+  expect(liveSustainedAttachments(records).map(record => record.id)).toEqual([2, 3])
+  expect(() => liveSustainedAttachments([{ kind: "destroy", id: 1 }])).toThrow("Unmatched")
+  expect(() => liveSustainedAttachments([{ kind: "create", id: 1 }, { kind: "create", id: 1 }])).toThrow("Duplicate")
+})
 
 test("full soak cannot enable deep CPU/allocation tracing or unbounded buffers", () => {
   expect(SUSTAINED_KOTH.categories).toEqual(["disabled-by-default-display.framedisplayed", "blink.user_timing", "disabled-by-default-v8.gc"])

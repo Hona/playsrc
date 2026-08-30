@@ -3,18 +3,19 @@ import { installGpuTextureAccounting } from "../profile/gpu-texture-accounting"
 import { installBrowserFrameProfiler } from "../profile/browser-frame-profiler"
 import { installLightmapAllocationProbe } from "../profile/lightmap-allocation-probe"
 
-function fixture(serialized = false, traceOwners = false) {
+function fixture(serialized = false, traceOwners: boolean | "attachments" = false) {
   const calls = { create: 0, destroy: 0, write: 0 }
   let failure: "create" | "destroy" | "write" | null = null
   const error = new Error("native failure")
   class GPUTexture {
     width: number; height: number; depthOrArrayLayers: number
-    dimension: string; format: string; mipLevelCount: number; sampleCount: number; label: string
+    dimension: string; format: string; mipLevelCount: number; sampleCount: number; label: string; usage: number
     constructor(descriptor: any) {
       const size = descriptor.size
       ;[this.width, this.height, this.depthOrArrayLayers] = Array.isArray(size) ? [size[0], size[1] ?? 1, size[2] ?? 1] : [size.width, size.height ?? 1, size.depthOrArrayLayers ?? 1]
       this.dimension = descriptor.dimension ?? "2d"; this.format = descriptor.format
       this.label = descriptor.label ?? ""
+      this.usage = descriptor.usage ?? 0
       this.mipLevelCount = descriptor.mipLevelCount ?? 1; this.sampleCount = descriptor.sampleCount ?? 1
     }
     destroy() { calls.destroy++; if (failure === "destroy") throw error; return "destroyed" }
@@ -41,6 +42,21 @@ test("opt-in owner records join native creation, uploads and retirement without 
   expect(new Set(owners.records.map((record: any) => record.id)).size).toBe(1)
   expect(owners.records[0]).toMatchObject({ owner: "authored:normal:frame=0", bytes: 64, width: 4, height: 4, mips: 1, samples: 1 })
   expect(owners.records[1].bytes).toBe(state.writeTextureSourceBytes)
+  reconcile(state)
+})
+
+test("sustained attachment accounting omits upload/pass streams without losing native retirement or totals", () => {
+  const { state, device, queue, host } = fixture(true, "attachments")
+  const image = device.createTexture({ size: [4, 4], format: "rgba8unorm", usage: 6 })
+  const attachment = device.createTexture({ size: [1280, 720], format: "rgba16float", usage: 20 })
+  for (let i = 0; i < 17000; i++) queue.writeTexture({ texture: image }, new Uint8Array(4), {}, {})
+  image.destroy(); attachment.destroy()
+  const owners = (host as any).__playsrcTextureOwners
+  expect(owners.records.map((record: any) => [record.kind, record.id])).toEqual([["create", 2], ["destroy", 2]])
+  expect(owners.dropped).toBe(0)
+  expect(state.writeTextureCalls).toBe(17000)
+  expect(state.writeTextureSourceBytes).toBe(68000)
+  expect(state.live.textures).toBe(0)
   reconcile(state)
 })
 

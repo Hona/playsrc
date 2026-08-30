@@ -10,6 +10,19 @@ export function requireSustainedBudget(remaining: number) {
   if (!Number.isFinite(remaining) || remaining < 120_000) throw new Error(`Sustained KOTH needs 120000 ms after live admission (90000 uninterrupted + deep sample/retention); only ${remaining} ms remain`)
 }
 
+export function liveSustainedAttachments(records: readonly { kind: string; id: number; [key: string]: unknown }[]) {
+  const live = new Map<number, typeof records[number]>()
+  for (const record of records) {
+    if (record.kind === "create") {
+      if (live.has(record.id)) throw new Error("Duplicate native attachment identity")
+      live.set(record.id, record)
+    } else if (record.kind === "destroy") {
+      if (!live.delete(record.id)) throw new Error("Unmatched native attachment destruction")
+    }
+  }
+  return [...live.values()]
+}
+
 type Observation = {
   at: number; generation: string; tick: string; bots: { identity: number; team: number; class: number; shots?: number; hits?: number; deaths?: number }[];
   round: { state: number; waitingForPlayers: boolean; inSetup: boolean };

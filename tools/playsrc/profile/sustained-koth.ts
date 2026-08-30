@@ -5,7 +5,7 @@ import { deliveryTimeline, installDeliveryObserver } from "./frame-delivery"
 import { captureProcessMemory } from "./process-memory"
 import { drainTraceStream, retainCompositorEvidence } from "./compositor-evidence"
 import { TRACE_START, TRACE_END, summarizeCompositorTruth } from "./compositor-truth"
-import { SUSTAINED_KOTH, requireSustainedBudget, checkSustainedObservation, sustainedTrends, sustainedGcEvidence } from "./sustained-koth-evidence"
+import { SUSTAINED_KOTH, requireSustainedBudget, checkSustainedObservation, sustainedTrends, sustainedGcEvidence, liveSustainedAttachments } from "./sustained-koth-evidence"
 export { requireSustainedBudget } from "./sustained-koth-evidence"
 
 /** One live map generation; no forced collection, restart, or clock changes.
@@ -106,4 +106,26 @@ export async function observeSustainedKoth(options: {
   if (!(trend.whole.shots! > 0 && (trend.whole.hits! > 0 || trend.whole.deaths! > 0))) throw new Error("Sustained KOTH lacks observed real combat activity")
   await checkNativeWindow()
   await page.locator("canvas.world-canvas").screenshot({ path: file("late.png") })
+}
+
+/** Ordinary Disconnect retires the renderer, not just a map's texture set.
+ * Run strictly after the uninterrupted soak and late sample/trace collection. */
+export async function retireSustainedKoth(page: Page, directory: string, checkNativeWindow: () => Promise<void>) {
+  const snapshot = () => page.evaluate(() => ({ at: performance.now(),
+    accounting: structuredClone((globalThis as any).__playsrcGpuTextureAccounting),
+    owners: structuredClone((globalThis as any).__playsrcTextureOwners) }))
+  await checkNativeWindow()
+  const before = await snapshot(), old = new Set(liveSustainedAttachments(before.owners.records).map(record => record.id))
+  const root = page.locator("main")
+  if (await root.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
+  await page.keyboard.press("Escape")
+  await page.locator('[data-vgui-name="DisconnectButton"]').click({ timeout: 5000 })
+  await page.waitForFunction(() => document.querySelector<HTMLElement>("main")?.dataset.phase === "MainMenu", undefined, { timeout: 10000 })
+  const after = await snapshot(), survivors = liveSustainedAttachments(after.owners.records).filter(record => old.has(record.id))
+  await writeFile(path.join(directory, "sustained-retirement.json"), JSON.stringify({ before, after, survivors,
+    scope: "Actual native API create/destroy calls for render attachments across ordinary Disconnect; new MainMenu allocations excluded by identity. Logical API bytes, not physical residency or inferred GC." }))
+  await checkNativeWindow()
+  await page.screenshot({ path: path.join(directory, "sustained-disconnected.png") })
+  if (before.owners.dropped || after.owners.dropped) throw new Error("Native attachment lifetime evidence overflowed")
+  if (!old.size || survivors.length) throw new Error(`Native attachment retirement incomplete: ${survivors.length}/${old.size} old attachments remain`)
 }
