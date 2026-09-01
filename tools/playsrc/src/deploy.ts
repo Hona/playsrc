@@ -89,73 +89,41 @@ async function verifyStaticTree(configuration: BrowserConfiguration): Promise<vo
   }
 }
 
-async function verifyRemoteObjects(target: string | undefined): Promise<void> {
-  const release = await readTf2Release(target)
-  const deadline = Date.now() + READY_TIMEOUT_MILLISECONDS
-  let last = "asset origin did not respond"
-  while (Date.now() < deadline) {
-    try {
-      const readObject = async (descriptor: ObjectDescriptor): Promise<Uint8Array> => {
-        const response = await fetch(`${CLOUDFLARE_ASSET_ORIGIN}/objects/sha256/${descriptor.sha256}`, {
-          method: "GET",
-          headers: { origin: TF2_APPLICATION_ORIGIN },
-          redirect: "error",
-        })
-        if (response.status !== 200 || response.headers.get("content-length") !== descriptor.byteLength) {
-          throw new DeploymentError(`remote object ${descriptor.sha256} response differs`)
-        }
-        const bytes = new Uint8Array(await response.arrayBuffer())
-        if (String(bytes.byteLength) !== descriptor.byteLength || new Bun.CryptoHasher("sha256").update(bytes).digest("hex") !== descriptor.sha256) {
-          throw new DeploymentError(`remote object ${descriptor.sha256} bytes differ`)
-        }
-        return bytes
-      }
-      const approvedWasm = await readObject(release.objects.wasm)
-      const compiledWasm = await readFile(path.join(repositoryRoot, "games/tf2/browser/src/wasm-generated/tf2_wasm_bg.wasm"))
-      assertReleaseWasmInterface(compiledWasm, approvedWasm)
-      const catalogBytes = await readObject(release.objects.catalog)
-      const catalog = parseResourceCatalogBytes(catalogBytes)
-      if (catalog.application !== "tf2" || catalog.entries.length !== release.targets.length) throw new DeploymentError("remote resource catalog target table differs")
-      const targetClosures = await Promise.all(release.targets.map(async (targetRelease) => {
-        const resources = selectCatalogTarget(catalog, targetRelease.target).resources
-        if (resources.sha256 !== targetRelease.objects.resources.sha256 || resources.byteLength !== targetRelease.objects.resources.byteLength) throw new DeploymentError(`remote ${targetRelease.target} catalog descriptor differs`)
-        const graph = parseResourceGraphBytes(await readObject(resources))
-        if (graph.target !== targetRelease.target || graph.contentBuild !== targetRelease.contentBuild) throw new DeploymentError(`remote ${targetRelease.target} resource graph identity differs`)
-        await Promise.all([readObject(targetRelease.objects.bsp), readObject(targetRelease.objects.dependencyLedger)])
-        return [targetRelease.objects.bsp, targetRelease.objects.dependencyLedger, resources, ...graph.chunks.map(resourceChunkObject)]
-      }))
-      const closure = [...Object.values(release.objects), ...targetClosures.flat()]
-      const unique = new Map(closure.map((descriptor) => [descriptor.sha256, descriptor]))
-      let ready = true
-      for (const descriptor of unique.values()) {
-        const response = await fetch(`${CLOUDFLARE_ASSET_ORIGIN}/objects/sha256/${descriptor.sha256}`, {
-          method: "HEAD",
-          headers: { origin: TF2_APPLICATION_ORIGIN },
-          redirect: "error",
-        })
-        if (response.status === 404) throw new DeploymentError(`remote object ${descriptor.sha256} is absent`)
-        if (
-          response.status === 200
-          && (
-            response.headers.get("content-length") !== descriptor.byteLength
-            || response.headers.get("etag") === null
-            || response.headers.get("access-control-allow-origin") !== TF2_APPLICATION_ORIGIN
-          )
-        ) throw new DeploymentError(`remote object ${descriptor.sha256} metadata differs`)
-        if (response.status !== 200) {
-          ready = false
-          last = `remote object ${descriptor.sha256} returned malformed metadata`
-          break
-        }
-      }
-      if (ready) return
-    } catch (error) {
-      if (error instanceof DeploymentError) throw error
-      last = error instanceof Error ? error.message : "asset-origin probe failed"
-    }
-    await Bun.sleep(2_000)
+export async function readRemoteReleaseObject(descriptor: ObjectDescriptor, fetcher: typeof fetch = fetch): Promise<Uint8Array> {
+  const response = await fetcher(`${CLOUDFLARE_ASSET_ORIGIN}/objects/sha256/${descriptor.sha256}`, {
+    method: "GET", headers: { origin: TF2_APPLICATION_ORIGIN }, redirect: "error", signal: AbortSignal.timeout(120_000),
+  })
+  if (response.status !== 200 || response.headers.get("content-length") !== descriptor.byteLength) throw new DeploymentError(`remote object ${descriptor.sha256} response differs (HTTP ${response.status})`)
+  const bytes = new Uint8Array(await response.arrayBuffer())
+  if (String(bytes.byteLength) !== descriptor.byteLength || new Bun.CryptoHasher("sha256").update(bytes).digest("hex") !== descriptor.sha256) throw new DeploymentError(`remote object ${descriptor.sha256} bytes differ`)
+  return bytes
+}
+
+/** Published immutable inputs must already exist. No build tree or readiness retry belongs in delivery. */
+export async function verifyRemoteObjects(prepared: Tf2Release, fetcher: typeof fetch = fetch): Promise<void> {
+  const release = parseTf2Release(prepared)
+  const readObject = (descriptor: ObjectDescriptor) => readRemoteReleaseObject(descriptor, fetcher)
+  await readObject(release.objects.wasm)
+  const catalog = parseResourceCatalogBytes(await readObject(release.objects.catalog))
+  if (catalog.application !== "tf2" || catalog.entries.length !== release.targets.length) throw new DeploymentError("remote resource catalog target table differs")
+  const targetClosures = await Promise.all(release.targets.map(async (targetRelease) => {
+    const resources = selectCatalogTarget(catalog, targetRelease.target).resources
+    if (resources.sha256 !== targetRelease.objects.resources.sha256 || resources.byteLength !== targetRelease.objects.resources.byteLength) throw new DeploymentError(`remote ${targetRelease.target} catalog descriptor differs`)
+    const graph = parseResourceGraphBytes(await readObject(resources))
+    if (graph.target !== targetRelease.target || graph.contentBuild !== targetRelease.contentBuild) throw new DeploymentError(`remote ${targetRelease.target} resource graph identity differs`)
+    await Promise.all([readObject(targetRelease.objects.bsp), readObject(targetRelease.objects.dependencyLedger)])
+    return [targetRelease.objects.bsp, targetRelease.objects.dependencyLedger, resources, ...graph.chunks.map(resourceChunkObject)]
+  }))
+  const closure = [...Object.values(release.objects), ...targetClosures.flat()]
+  const unique = new Map(closure.map((descriptor) => [descriptor.sha256, descriptor]))
+  for (const descriptor of unique.values()) {
+    const response = await fetcher(`${CLOUDFLARE_ASSET_ORIGIN}/objects/sha256/${descriptor.sha256}`, {
+      method: "HEAD", headers: { origin: TF2_APPLICATION_ORIGIN }, redirect: "error", signal: AbortSignal.timeout(120_000),
+    })
+    if (response.status !== 200) throw new DeploymentError(`remote object ${descriptor.sha256} metadata response differs (HTTP ${response.status})`)
+    if (response.headers.get("content-length") !== descriptor.byteLength || response.headers.get("etag") === null
+      || response.headers.get("access-control-allow-origin") !== TF2_APPLICATION_ORIGIN) throw new DeploymentError(`remote object ${descriptor.sha256} metadata differs`)
   }
-  throw new DeploymentError(`asset origin did not become ready within 600000 ms: ${last}`)
 }
 
 async function waitForDeployment(target: string | undefined, applicationBuild: string): Promise<void> {
@@ -212,7 +180,7 @@ export function assertPreparedReleaseIdentity(packaged: Pick<Awaited<ReturnType<
 export async function deployCloudflare(target: string | undefined): Promise<void> {
   const packaged = await verifyPreparedRelease(target)
   const applicationBuild = packaged.configuration.applicationBuild
-  await verifyRemoteObjects(target)
+  await verifyRemoteObjects(packaged.release)
   if ((await staticStartupPackage(DIST_DIRECTORY)).sha256 !== packaged.sha256) throw new DeploymentError("Static package changed after startup acceptance")
   await applyCloudflareInfrastructure()
   if ((await staticStartupPackage(DIST_DIRECTORY)).sha256 !== packaged.sha256) throw new DeploymentError("Static package changed before deployment")
