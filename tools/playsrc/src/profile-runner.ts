@@ -36,7 +36,6 @@ const PROFILES = Object.freeze({
   "browser-input-lifecycle": { config: "playwright.browser-input.config.ts", target: "pl_upward", environment: { PROFILE_INPUT_LIFECYCLE_ONLY: "1" }, minimumRemainingMilliseconds: 75_000 },
   "runner-handoff": { config: "playwright.runner-handoff.config.ts", target: "jump_beef" },
   "simd-decoder": { config: "playwright.simd-profile.config.ts", target: "koth_viaduct", environment: process.platform === "win32" ? { PLAYSRC_PROFILE_BROWSER_CHANNEL: "msedge" } : {}, minimumRemainingMilliseconds: 40_000 },
-  "simd-audio-playback": { config: "playwright.simd-profile.config.ts", target: "koth_viaduct", environment: { PROFILE_SIMD_PLAYBACK: "1", ...(process.platform === "win32" ? { PLAYSRC_PROFILE_BROWSER_CHANNEL: "msedge" } : {}) }, minimumRemainingMilliseconds: 70_000 },
   "damage-indicator": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "damage-indicator" }, minimumRemainingMilliseconds: environment => environment.PROFILE_DAMAGE_LIFECYCLE === "1" ? 70_000 : environment.PROFILE_DAMAGE_DYNAMIC === "1" ? 40_000 : DEFAULT_BROWSER_MINIMUM_MILLISECONDS },
   "setup-round": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "setup-round" }, minimumRemainingMilliseconds: 140_000 },
   "soundscape-selection": { config: "playwright.profile.config.ts", target: "cp_granary", environment: { PROFILE_SCENARIOS: "soundscape-selection" }, minimumRemainingMilliseconds: 60_000 },
