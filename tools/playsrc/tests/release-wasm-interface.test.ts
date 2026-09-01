@@ -32,7 +32,7 @@ test("startup receipt waiver requires explicit authorization for exactly v0.0.12
     { PLAYSRC_RELEASE_VERSION: "0.0.11", PLAYSRC_WAIVE_V0012_STARTUP_RECEIPT: "true" },
     { PLAYSRC_RELEASE_VERSION: "0.0.12", PLAYSRC_WAIVE_V0011_STARTUP_RECEIPT: "true" },
   ]) expect(() => assertReleaseStartupAcceptance(expected, environment)).toThrow("startup receipt")
-  expect(() => assertReleaseStartupAcceptance(expected, { PLAYSRC_STATIC_STARTUP_RECEIPT: "{}" })).toThrow("absent or mismatched")
+  expect(() => assertReleaseStartupAcceptance(expected, { PLAYSRC_STATIC_STARTUP_RECEIPT: "{}" })).toThrow("Startup receipt identity mismatch")
   const warning = spyOn(console, "warn").mockImplementation(() => {})
   try {
     expect(() => assertReleaseStartupAcceptance(expected, { PLAYSRC_RELEASE_VERSION: "0.0.12", PLAYSRC_WAIVE_V0012_STARTUP_RECEIPT: "true" })).not.toThrow()
