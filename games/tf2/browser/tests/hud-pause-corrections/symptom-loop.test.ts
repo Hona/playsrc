@@ -204,6 +204,8 @@ function compact(
   const maximumReserve = weapon === 17 ? 0 : weapon === 4 ? 32 : weapon === 3 ? 24 : 20
   const selected = nativeEquipment.inventory.find(item => item.classSlots.some(slot => slot.class === classIdentity && slot.weapon === weapon))!.item
   const snapshot = Object.freeze({
+    pipebombCount: 0,
+    chargeProgress: weapon === 3 ? 0 : null,
     equippedItems: stockItems(classIdentity).map(item => item.slot === selected.slot ? selected : item),
     decapitations: 0,
     revengeCrits: 0,
@@ -250,6 +252,104 @@ const contextWithModel = (playerClassUsePlayerModel: boolean): SessionHudContext
   Object.freeze({ ...context, playerClassUsePlayerModel })
 
 describe("TF2 HUD and pause headed symptom loop", () => {
+  test("Demoman pipes consume the launcher count on visible 100 ms ticks, not rendered projectile count", () => {
+    let time = 0
+    let tick = 0n
+    const hud = initializeTf2HudIntegration({ root: createRoot(new FakeDocument()) as unknown as HTMLElement,
+      resources: resources(), viewport: { width: 1280, height: 720, devicePixelRatio: 1 }, reducedMotion: true,
+      clock: { nowSeconds: () => time }, random: { nextUnit: () => 0.5 }, onCommand() {} })
+    const publish = (count: number, weapon: 3 | 17 = 3, suppressed = false) => {
+      const snapshot = { ...compact(++tick, 4, 2, weapon, weapon === 3 ? 7 : 0, weapon === 3 ? 24 : 0).snapshot,
+        pipebombCount: count, chargeProgress: weapon === 3 ? 0 : null, projectiles: [] }
+      hud.publish({ snapshot, eventBatches: [{ snapshot }] }, { ...context, liveHudSuppressed: suppressed })
+    }
+    const panels = () => hud.snapshot().vgui.panels
+    const countText = (parent: string) => {
+      const branch = panels().find(panel => panel.name === parent)!
+      return panels().filter(panel => panel.parent === branch.id && panel.name.startsWith("NumPipesLabel")).map(panel => panel.text)
+    }
+    try {
+      publish(8)
+      expect(panels().find(panel => panel.name === "HudDemomanPipes")).toBeDefined()
+      time = 0.1; hud.frame(time)
+      expect(countText("PipesPresentPanel")).toEqual(["8", "8"])
+      expect(countText("NoPipesPresentPanel")).toEqual(["8", "8"])
+      expect(visible(panels(), ["PipesPresentPanel", "NoPipesPresentPanel"])).toEqual(["PipesPresentPanel"])
+      publish(0, 17)
+      time = 0.199; hud.frame(time)
+      expect(countText("PipesPresentPanel")).toEqual(["8", "8"])
+      time = 0.2; hud.frame(time)
+      expect(countText("NoPipesPresentPanel")).toEqual(["0", "0"])
+      expect(visible(panels(), ["PipesPresentPanel", "NoPipesPresentPanel"])).toEqual(["NoPipesPresentPanel"])
+      publish(3, 17, true)
+      time = 0.3; hud.frame(time)
+      expect(countText("NoPipesPresentPanel")).toEqual(["0", "0"])
+      expect(visible(panels(), ["HudDemomanPipes"])).toEqual([])
+      publish(3, 17)
+      time = 0.4; hud.frame(time)
+      expect(countText("PipesPresentPanel")).toEqual(["3", "3"])
+      const writes = () => hud.snapshot().vgui.trace.filter(entry => entry.phase === "dialog-variable" && entry.detail === "activepipes").length
+      expect(writes()).toBe(6)
+      publish(3, 17)
+      time = 0.5; hud.frame(time)
+      expect(writes()).toBe(6)
+      publish(4, 17)
+      time = 1; hud.frame(time, false)
+      expect(countText("PipesPresentPanel")).toEqual(["3", "3"])
+      time = 1.099; hud.frame(time)
+      expect(countText("PipesPresentPanel")).toEqual(["3", "3"])
+      time = 1.1; hud.frame(time)
+      expect(countText("PipesPresentPanel")).toEqual(["4", "4"])
+      hud.reset("map-replaced")
+      expect(visible(panels(), ["HudDemomanPipes"])).toEqual([])
+    } finally { hud.destroy() }
+  })
+
+  test("launcher charge drives the authored progress control, independently of the pipe tick and shield bar", () => {
+    let time = 0, tick = 0n
+    const hud = initializeTf2HudIntegration({ root: createRoot(new FakeDocument()) as unknown as HTMLElement,
+      resources: resources(), viewport: { width: 1280, height: 720, devicePixelRatio: 1 }, reducedMotion: true,
+      clock: { nowSeconds: () => time }, random: { nextUnit: () => 0.5 }, onCommand() {} })
+    const publish = (progress: number | null, team: 2 | 3 = 2, lifecycle: 1 | 2 = 1, ghost = false) => {
+      const snapshot = { ...compact(++tick, 4, team, progress === null ? 17 : 3, progress === null ? 0 : 7, progress === null ? 0 : 24).snapshot,
+        pipebombCount: 1, chargeProgress: progress, lifecycle, conditions: [0, 0, ghost ? 1 << 13 : 0, 0, 0] as const }
+      hud.publish({ snapshot, eventBatches: [{ snapshot }] }, context)
+    }
+    const panels = () => hud.snapshot().vgui.panels
+    const root = () => panels().find(panel => panel.name === "HudDemomanCharge")!
+    const meter = () => panels().find(panel => panel.parent === root().id && panel.name === "ChargeMeter")!
+    try {
+      publish(0.375)
+      time = 0.001; hud.frame(time)
+      expect(root().effectivelyVisible).toBe(true)
+      expect(meter().state.progress).toBe(0.375)
+      expect(meter().resourceOwner).toContain("huddemomancharge.res")
+      publish(0.5, 3)
+      time = 0.016; hud.frame(time)
+      expect(meter().state.progress).toBe(0.5)
+      time = 0.1; hud.frame(time)
+      const pipes = panels().find(panel => panel.name === "HudDemomanPipes")!
+      expect(panels().filter(panel => panel.parent === pipes.id && ["ChargeLabel", "ChargeMeter"].includes(panel.name)).every(panel => !panel.effectivelyVisible)).toBe(true)
+      expect(panels().filter(panel => panel.name === "PipeIcon").map(panel => panel.state.image).sort()).toEqual(["../hud/ico_stickybomb_blue", "../hud/ico_stickybomb_blue_faded"])
+      publish(null)
+      expect(root().effectivelyVisible).toBe(false)
+      expect(panels().find(panel => panel.id === pipes.id)!.effectivelyVisible).toBe(true)
+      publish(0.75, 2, 2)
+      expect(root().effectivelyVisible).toBe(false)
+      expect(panels().find(panel => panel.id === pipes.id)!.effectivelyVisible).toBe(false)
+      publish(0.75, 2, 1, true)
+      expect(root().effectivelyVisible).toBe(false)
+      publish(1)
+      time = 0.116; hud.frame(time)
+      expect(meter().state.progress).toBe(1)
+      hud.reset("disconnect")
+      expect(root().effectivelyVisible).toBe(false)
+      const before = hud.snapshot()
+      expect(() => publish(1.01)).toThrow("not authoritative")
+      expect(hud.snapshot()).toEqual(before)
+    } finally { hud.destroy() }
+  })
+
   test("keeps authored kill and revenge count panels independent through holster and class changes", () => {
     const hud = initializeTf2HudIntegration({ root: createRoot(new FakeDocument()) as unknown as HTMLElement,
       resources: resources(), viewport: { width: 1280, height: 720, devicePixelRatio: 1 }, reducedMotion: true,

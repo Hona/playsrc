@@ -343,6 +343,7 @@ fn configured_bundle() -> BTreeMap<String, Vec<u8>> {
     let source_cache = json_string(&config, "sourceCacheDir");
     let bytes = playsrc_asset_graph::read_resource_set(
         &Path::new(&source_cache).join("browser-bundles/jump_beef.graph.json"),
+        &Path::new(&source_cache).join("browser-bundles/jump_beef.graph/objects"),
         Some("gameplay"),
     )
     .unwrap();

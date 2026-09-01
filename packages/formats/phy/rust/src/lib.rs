@@ -19,6 +19,7 @@ pub enum Profile {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Limits {
     pub max_input_bytes: usize,
+    /// Capacity bytes of buffers retained by the returned asset, excluding parser scratch.
     pub max_retained_bytes: usize,
     pub max_solids: usize,
     pub max_solid_bytes: usize,
@@ -94,9 +95,46 @@ pub struct Triangle {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Convex {
     pub client_data: i32,
+    pub geometry: usize,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConvexGeometry {
+    pub raw_header: [u8; 16],
+    pub subtree: Option<usize>,
     pub raw_range: Range<usize>,
     pub points: Vec<Point>,
     pub triangles: Vec<Triangle>,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HierarchyNode {
+    pub raw: [u8; 28],
+    pub children: Option<[usize; 2]>,
+    /// Index into the solid's geometry array, including nonterminal hulls.
+    pub hull: Option<usize>,
+}
+impl HierarchyNode {
+    pub fn center_bits(&self) -> [Float32; 3] {
+        std::array::from_fn(|axis| {
+            Float32(u32::from_le_bytes(
+                self.raw[8 + axis * 4..12 + axis * 4]
+                    .try_into()
+                    .expect("node center"),
+            ))
+        })
+    }
+    pub fn radius_bits(&self) -> Float32 {
+        Float32(u32::from_le_bytes(
+            self.raw[20..24].try_into().expect("node radius"),
+        ))
+    }
+    pub fn box_sizes(&self) -> [u8; 3] {
+        self.raw[24..27].try_into().expect("node bounds")
+    }
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConvexHierarchy {
+    /// The root is always entry zero. Child order is authored left, right.
+    pub nodes: Vec<HierarchyNode>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Solid {
@@ -118,6 +156,8 @@ pub struct Solid {
     pub axis_map: Vec<u8>,
     pub game_data: Vec<u32>,
     pub convexes: Vec<Convex>,
+    pub geometries: Vec<ConvexGeometry>,
+    pub hierarchy: Option<ConvexHierarchy>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Header {
@@ -161,10 +201,65 @@ pub struct Asset {
     pub key_data: KeyData,
 }
 
+impl Asset {
+    pub fn retained_bytes(&self) -> usize {
+        fn capacity<T>(values: &Vec<T>) -> usize {
+            values.capacity() * std::mem::size_of::<T>()
+        }
+        fn entries(values: &Vec<KeyValue>) -> usize {
+            capacity(values)
+                + values
+                    .iter()
+                    .map(|value| match value {
+                        KeyValue::Scalar { key, value } => capacity(key) + capacity(value),
+                        KeyValue::Block {
+                            key,
+                            entries: children,
+                        } => capacity(key) + entries(children),
+                    })
+                    .sum::<usize>()
+        }
+        capacity(&self.source)
+            + capacity(&self.solids)
+            + self
+                .solids
+                .iter()
+                .map(|solid| {
+                    capacity(&solid.body)
+                        + capacity(&solid.axis_map)
+                        + capacity(&solid.game_data)
+                        + capacity(&solid.convexes)
+                        + capacity(&solid.geometries)
+                        + solid
+                            .hierarchy
+                            .as_ref()
+                            .map_or(0, |tree| capacity(&tree.nodes))
+                        + solid
+                            .geometries
+                            .iter()
+                            .map(|geometry| {
+                                capacity(&geometry.points) + capacity(&geometry.triangles)
+                            })
+                            .sum::<usize>()
+                })
+                .sum::<usize>()
+            + capacity(&self.key_data.raw)
+            + capacity(&self.key_data.suffix)
+            + capacity(&self.key_data.blocks)
+            + self
+                .key_data
+                .blocks
+                .iter()
+                .map(|block| capacity(&block.name) + entries(&block.entries))
+                .sum::<usize>()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ErrorCode {
     InvalidLimits,
     InputLimit,
+    RetainedLimit,
     TruncatedHeader,
     InvalidHeader,
     InvalidSolidCount,
@@ -197,6 +292,47 @@ impl fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 
+struct RetainedBudget {
+    remaining: usize,
+    input_size: usize,
+}
+impl RetainedBudget {
+    fn new(limits: Limits, input_size: usize) -> Self {
+        Self {
+            remaining: limits.max_retained_bytes,
+            input_size,
+        }
+    }
+    fn reserve<T>(&mut self, values: &mut Vec<T>, capacity: usize) -> Result<(), Error> {
+        let extra = capacity.saturating_sub(values.capacity());
+        let bytes = extra
+            .checked_mul(std::mem::size_of::<T>())
+            .filter(|bytes| *bytes <= self.remaining)
+            .ok_or_else(|| err(ErrorCode::RetainedLimit, 0..self.input_size, None))?;
+        if extra > 0 {
+            values
+                .try_reserve_exact(capacity - values.len())
+                .map_err(|_| err(ErrorCode::RetainedLimit, 0..self.input_size, None))?;
+            self.remaining -= bytes;
+        }
+        Ok(())
+    }
+    fn push<T>(&mut self, values: &mut Vec<T>, value: T) -> Result<(), Error> {
+        if values.len() == values.capacity() {
+            let capacity = values.capacity().saturating_mul(2).max(4);
+            self.reserve(values, capacity)?;
+        }
+        values.push(value);
+        Ok(())
+    }
+    fn copy(&mut self, bytes: &[u8]) -> Result<Vec<u8>, Error> {
+        let mut values = Vec::new();
+        self.reserve(&mut values, bytes.len())?;
+        values.extend_from_slice(bytes);
+        Ok(values)
+    }
+}
+
 pub fn parse_standalone(bytes: &[u8], profile: Profile, limits: Limits) -> Result<Asset, Error> {
     validate_limits(limits)?;
     if bytes.len() > limits.max_input_bytes {
@@ -220,11 +356,20 @@ pub fn parse_standalone(bytes: &[u8], profile: Profile, limits: Limits) -> Resul
         solid_count,
         checksum: i32_at(bytes, 12, None)?,
     };
-    let (solids, end) = parse_solids(bytes, 16, solid_count as usize, profile, limits)?;
-    let key_data = parse_keydata(&bytes[end..], end, limits)?;
+    let mut budget = RetainedBudget::new(limits, bytes.len());
+    let source = budget.copy(bytes)?;
+    let (solids, end) = parse_solids(
+        bytes,
+        16,
+        solid_count as usize,
+        profile,
+        limits,
+        &mut budget,
+    )?;
+    let key_data = parse_keydata(&bytes[end..], end, limits, &mut budget)?;
     Ok(Asset {
         profile,
-        source: bytes.to_vec(),
+        source,
         header: Some(header),
         solids,
         key_data,
@@ -246,7 +391,12 @@ pub fn parse_payload(
             None,
         ));
     }
-    let (solids, end) = parse_solids(collision, 0, solid_count, profile, limits)?;
+    let mut budget = RetainedBudget::new(limits, collision.len() + keydata.len());
+    let mut source = Vec::new();
+    budget.reserve(&mut source, collision.len() + keydata.len())?;
+    source.extend_from_slice(collision);
+    source.extend_from_slice(keydata);
+    let (solids, end) = parse_solids(collision, 0, solid_count, profile, limits, &mut budget)?;
     if end != collision.len() {
         return Err(err(
             ErrorCode::InvalidSolidRange,
@@ -254,9 +404,7 @@ pub fn parse_payload(
             None,
         ));
     }
-    let key_data = parse_keydata(keydata, collision.len(), limits)?;
-    let mut source = collision.to_vec();
-    source.extend_from_slice(keydata);
+    let key_data = parse_keydata(keydata, collision.len(), limits, &mut budget)?;
     Ok(Asset {
         profile,
         source,
@@ -272,11 +420,13 @@ fn parse_solids(
     count: usize,
     _profile: Profile,
     limits: Limits,
+    budget: &mut RetainedBudget,
 ) -> Result<(Vec<Solid>, usize), Error> {
     if count == 0 || count > limits.max_solids {
         return Err(err(ErrorCode::InvalidSolidCount, cursor..cursor, None));
     }
-    let mut output = Vec::with_capacity(count);
+    let mut output = Vec::new();
+    budget.reserve(&mut output, count)?;
     for index in 0..count {
         let prefix = cursor;
         let length = i32_at(bytes, cursor, Some(index))?;
@@ -291,7 +441,7 @@ fn parse_solids(
             .checked_add(4)
             .ok_or_else(|| err(ErrorCode::InvalidSolidRange, prefix..prefix, Some(index)))?;
         let body = take(bytes, cursor, length as usize, Some(index))?;
-        output.push(parse_solid(body, index, cursor, length, limits)?);
+        output.push(parse_solid(body, index, cursor, length, limits, budget)?);
         cursor += length as usize;
     }
     Ok((output, cursor))
@@ -303,6 +453,7 @@ fn parse_solid(
     base: usize,
     length: i32,
     limits: Limits,
+    budget: &mut RetainedBudget,
 ) -> Result<Solid, Error> {
     let mut encoding = Encoding::LegacyOther;
     let mut shape = ShapeKind::Unknown;
@@ -358,7 +509,7 @@ fn parse_solid(
                 surface = Some(&body[start..end]);
                 surface_base = base + start;
                 drag = Some(float3(body, 12, index)?);
-                axis_map = body[end..axis_end].to_vec();
+                axis_map = budget.copy(&body[end..axis_end])?;
             }
             1 => {
                 shape = ShapeKind::Mopp;
@@ -402,7 +553,7 @@ fn parse_solid(
         index,
         length_prefix: length,
         body_range: base..base + body.len(),
-        body: body.to_vec(),
+        body: budget.copy(body)?,
         encoding,
         shape,
         classification,
@@ -417,9 +568,11 @@ fn parse_solid(
         axis_map,
         game_data: Vec::new(),
         convexes: Vec::new(),
+        geometries: Vec::new(),
+        hierarchy: None,
     };
     if let Some(surface) = surface {
-        decode_surface(surface, surface_base, &mut solid, limits)?;
+        decode_surface(surface, surface_base, &mut solid, limits, budget)?;
     }
     Ok(solid)
 }
@@ -429,6 +582,7 @@ fn decode_surface(
     base: usize,
     solid: &mut Solid,
     limits: Limits,
+    budget: &mut RetainedBudget,
 ) -> Result<(), Error> {
     take(surface, 0, 48, Some(solid.index))?;
     let center = float3(surface, 0, solid.index)?;
@@ -443,6 +597,7 @@ fn decode_surface(
             Some(solid.index),
         ));
     }
+    let surface = &surface[..size];
     let root = positive_i32(surface, 32, solid.index)?;
     take(surface, root, 28, Some(solid.index))?;
     solid.center_bits = center;
@@ -456,7 +611,11 @@ fn decode_surface(
     let mut active = BTreeSet::new();
     let mut done = BTreeSet::new();
     let mut ledges = BTreeSet::new();
-    let mut nodes = 0usize;
+    let mut node_indices = BTreeMap::new();
+    let mut geometry_indices = BTreeMap::new();
+    let mut hierarchy = ConvexHierarchy { nodes: Vec::new() };
+    let mut children = Vec::<Option<[usize; 2]>>::new();
+    let mut geometry_links = Vec::<Option<usize>>::new();
     while let Some((node, depth, exit)) = pending.pop() {
         if exit {
             active.remove(&node);
@@ -473,18 +632,89 @@ fn decode_surface(
                 Some(solid.index),
             ));
         }
-        nodes += 1;
-        if nodes > limits.max_tree_nodes || depth > limits.max_tree_depth {
+        if hierarchy.nodes.len() >= limits.max_tree_nodes || depth > limits.max_tree_depth {
             return Err(err(
                 ErrorCode::TreeLimit,
                 base + node..base + node + 28,
                 Some(solid.index),
             ));
         }
-        take(surface, node, 28, Some(solid.index))?;
+        let raw: [u8; 28] = take(surface, node, 28, Some(solid.index))?
+            .try_into()
+            .expect("hierarchy node");
+        for value in float3(surface, node + 8, solid.index)? {
+            finite(value)?;
+        }
+        if finite(float(surface, node + 20, solid.index)?)? < 0.0 {
+            return Err(err(
+                ErrorCode::InvalidSurface,
+                base + node + 20..base + node + 24,
+                Some(solid.index),
+            ));
+        }
+        let node_index = hierarchy.nodes.len();
+        node_indices.insert(node, node_index);
         pending.push((node, depth, true));
         let right = i32_at(surface, node, Some(solid.index))?;
         let ledge = i32_at(surface, node + 4, Some(solid.index))?;
+        let mut hull = None;
+        if ledge != 0 {
+            let at = add_signed(node, ledge, solid.index)?;
+            let geometry = if let Some(index) = geometry_indices.get(&at) {
+                *index
+            } else {
+                if solid.geometries.len() >= limits.max_convex_pieces {
+                    return Err(err(
+                        ErrorCode::TreeLimit,
+                        base + at..base + at,
+                        Some(solid.index),
+                    ));
+                }
+                let geometry = parse_convex(surface, base, at, solid.index, limits, budget)?;
+                let recursive = u32_at(surface, at + 8, Some(solid.index))? & 3 != 0;
+                let link = if recursive {
+                    Some(add_signed(
+                        at,
+                        i32_at(surface, at + 4, Some(solid.index))?,
+                        solid.index,
+                    )?)
+                } else {
+                    None
+                };
+                let index = solid.geometries.len();
+                budget.push(&mut solid.geometries, geometry)?;
+                geometry_links.push(link);
+                geometry_indices.insert(at, index);
+                index
+            };
+            hull = Some(geometry);
+            if right == 0 && ledges.insert(at) {
+                if geometry_links[geometry].is_some() {
+                    return Err(err(
+                        ErrorCode::InvalidConvex,
+                        base + at..base + at + 16,
+                        Some(solid.index),
+                    ));
+                }
+                let client_data = i32_at(surface, at + 4, Some(solid.index))?;
+                budget.push(&mut solid.game_data, client_data as u32)?;
+                budget.push(
+                    &mut solid.convexes,
+                    Convex {
+                        client_data,
+                        geometry,
+                    },
+                )?;
+            }
+        }
+        budget.push(
+            &mut hierarchy.nodes,
+            HierarchyNode {
+                raw,
+                children: None,
+                hull,
+            },
+        )?;
         if right == 0 {
             if ledge == 0 {
                 return Err(err(
@@ -493,19 +723,7 @@ fn decode_surface(
                     Some(solid.index),
                 ));
             }
-            let at = add_signed(node, ledge, solid.index)?;
-            if ledges.insert(at) {
-                let convex = parse_convex(surface, base, at, solid.index, limits)?;
-                solid.game_data.push(convex.0);
-                solid.convexes.push(convex.1);
-                if solid.convexes.len() > limits.max_convex_pieces {
-                    return Err(err(
-                        ErrorCode::TreeLimit,
-                        base + at..base + at,
-                        Some(solid.index),
-                    ));
-                }
-            }
+            children.push(None);
         } else {
             let left = node.checked_add(28).ok_or_else(|| {
                 err(
@@ -517,8 +735,40 @@ fn decode_surface(
             let right = add_signed(node, right, solid.index)?;
             take(surface, left, 28, Some(solid.index))?;
             take(surface, right, 28, Some(solid.index))?;
+            children.push(Some([left, right]));
             pending.push((left, depth + 1, false));
             pending.push((right, depth + 1, false));
+        }
+    }
+    for (index, children) in children.into_iter().enumerate() {
+        if let Some([left, right]) = children {
+            hierarchy.nodes[index].children = Some([
+                *node_indices.get(&left).ok_or_else(|| {
+                    err(
+                        ErrorCode::InvalidSurface,
+                        base + left..base + left,
+                        Some(solid.index),
+                    )
+                })?,
+                *node_indices.get(&right).ok_or_else(|| {
+                    err(
+                        ErrorCode::InvalidSurface,
+                        base + right..base + right,
+                        Some(solid.index),
+                    )
+                })?,
+            ]);
+        }
+    }
+    for (index, link) in geometry_links.into_iter().enumerate() {
+        if let Some(link) = link {
+            solid.geometries[index].subtree = Some(*node_indices.get(&link).ok_or_else(|| {
+                err(
+                    ErrorCode::InvalidSurface,
+                    base + link..base + link,
+                    Some(solid.index),
+                )
+            })?);
         }
     }
     if solid.convexes.is_empty() {
@@ -528,6 +778,7 @@ fn decode_surface(
             Some(solid.index),
         ));
     }
+    solid.hierarchy = Some(hierarchy);
     Ok(())
 }
 
@@ -537,10 +788,12 @@ fn parse_convex(
     offset: usize,
     solid: usize,
     limits: Limits,
-) -> Result<(u32, Convex), Error> {
-    take(surface, offset, 16, Some(solid))?;
-    let point_relative = positive_i32(surface, offset, solid)?;
-    let client = i32_at(surface, offset + 4, Some(solid))?;
+    budget: &mut RetainedBudget,
+) -> Result<ConvexGeometry, Error> {
+    let raw_header = take(surface, offset, 16, Some(solid))?
+        .try_into()
+        .expect("convex header");
+    let point_relative = i32_at(surface, offset, Some(solid))?;
     let packed = u32_at(surface, offset + 8, Some(solid))?;
     let size = ((packed >> 8) as usize).checked_mul(16).ok_or_else(|| {
         err(
@@ -558,7 +811,10 @@ fn parse_convex(
     }
     take(surface, offset, size, Some(solid))?;
     let triangle_count = i16_at(surface, offset + 12, Some(solid))?;
-    if triangle_count < 0 || triangle_count as usize > limits.max_triangles {
+    if triangle_count < 0
+        || triangle_count as usize > limits.max_triangles
+        || 16 + (triangle_count as usize) * 16 > size
+    {
         return Err(err(
             ErrorCode::InvalidConvex,
             base + offset + 12..base + offset + 14,
@@ -587,15 +843,22 @@ fn parse_convex(
             Some(solid),
         ));
     }
-    let points_start = offset.checked_add(point_relative).ok_or_else(|| {
-        err(
-            ErrorCode::InvalidPoint,
-            base + offset..base + offset,
-            Some(solid),
-        )
-    })?;
+    let points_start = add_signed(offset, point_relative, solid)?;
+    if let Some(&last) = source_points.last() {
+        let last = points_start
+            .checked_add(last as usize * 16)
+            .ok_or_else(|| {
+                err(
+                    ErrorCode::InvalidPoint,
+                    base + offset..base + offset,
+                    Some(solid),
+                )
+            })?;
+        take(surface, last, 16, Some(solid))?;
+    }
     let mut remap = BTreeMap::new();
     let mut points = Vec::new();
+    budget.reserve(&mut points, source_points.len())?;
     for source in source_points {
         let at = points_start + source as usize * 16;
         let bits = float3(surface, at, solid)?;
@@ -607,25 +870,24 @@ fn parse_convex(
             raw_range: base + at..base + at + 16,
         });
     }
-    let triangles = raw_triangles
-        .into_iter()
-        .map(|(raw, metadata, p)| Triangle {
+    let mut triangles = Vec::new();
+    budget.reserve(&mut triangles, raw_triangles.len())?;
+    for (raw, metadata, p) in raw_triangles {
+        triangles.push(Triangle {
             raw,
             point_indices: [remap[&p[2]], remap[&p[1]], remap[&p[0]]],
             material_index: ((metadata >> 24) & 0x7f) as u8,
             is_virtual: metadata & 0x8000_0000 != 0,
             unclassified_bits: metadata & 0x00ff_ffff,
-        })
-        .collect();
-    Ok((
-        client as u32,
-        Convex {
-            client_data: client,
-            raw_range: base + offset..base + offset + size,
-            points,
-            triangles,
-        },
-    ))
+        });
+    }
+    Ok(ConvexGeometry {
+        raw_header,
+        subtree: None,
+        raw_range: base + offset..base + offset + size,
+        points,
+        triangles,
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -634,7 +896,12 @@ enum TokenKind {
     Open,
     Close,
 }
-fn parse_keydata(bytes: &[u8], base: usize, limits: Limits) -> Result<KeyData, Error> {
+fn parse_keydata(
+    bytes: &[u8],
+    base: usize,
+    limits: Limits,
+    budget: &mut RetainedBudget,
+) -> Result<KeyData, Error> {
     if bytes.len() > limits.max_keydata_bytes {
         return Err(err(ErrorCode::KeydataLimit, base..base + bytes.len(), None));
     }
@@ -719,33 +986,36 @@ fn parse_keydata(bytes: &[u8], base: usize, limits: Limits) -> Result<KeyData, E
     let mut at = 0;
     let mut blocks = Vec::new();
     while at < tokens.len() {
-        let name = word(&tokens, &mut at, base)?;
+        let name = word(&tokens, &mut at, base, budget)?;
         if !matches!(tokens.get(at), Some(TokenKind::Open)) {
             return Err(err(ErrorCode::InvalidKeydata, base..base + nul, None));
         }
         at += 1;
-        blocks.push(KeyBlock {
-            name,
-            entries: key_entries(&tokens, &mut at, 1, limits, base)?,
-        });
+        let entries = key_entries(&tokens, &mut at, 1, limits, base, budget)?;
+        budget.push(&mut blocks, KeyBlock { name, entries })?;
     }
     let mut term_end = nul + 1;
     while term_end < bytes.len() && bytes[term_end] == 0 {
         term_end += 1;
     }
     Ok(KeyData {
-        raw: bytes.to_vec(),
+        raw: budget.copy(bytes)?,
         document_range: base..base + nul,
         terminator_range: base + nul..base + term_end,
-        suffix: bytes[term_end..].to_vec(),
+        suffix: budget.copy(&bytes[term_end..])?,
         blocks,
     })
 }
-fn word(tokens: &[TokenKind], at: &mut usize, base: usize) -> Result<Vec<u8>, Error> {
+fn word(
+    tokens: &[TokenKind],
+    at: &mut usize,
+    base: usize,
+    budget: &mut RetainedBudget,
+) -> Result<Vec<u8>, Error> {
     match tokens.get(*at) {
         Some(TokenKind::Word(v)) => {
             *at += 1;
-            Ok(v.clone())
+            budget.copy(v)
         }
         _ => Err(err(ErrorCode::InvalidKeydata, base..base, None)),
     }
@@ -756,6 +1026,7 @@ fn key_entries(
     depth: usize,
     limits: Limits,
     base: usize,
+    budget: &mut RetainedBudget,
 ) -> Result<Vec<KeyValue>, Error> {
     if depth > limits.max_keydata_depth {
         return Err(err(ErrorCode::KeydataLimit, base..base, None));
@@ -766,20 +1037,16 @@ fn key_entries(
             *at += 1;
             return Ok(out);
         }
-        let key = word(tokens, at, base)?;
+        let key = word(tokens, at, base, budget)?;
         match tokens.get(*at) {
             Some(TokenKind::Open) => {
                 *at += 1;
-                out.push(KeyValue::Block {
-                    key,
-                    entries: key_entries(tokens, at, depth + 1, limits, base)?,
-                });
+                let entries = key_entries(tokens, at, depth + 1, limits, base, budget)?;
+                budget.push(&mut out, KeyValue::Block { key, entries })?;
             }
             Some(TokenKind::Word(value)) => {
-                out.push(KeyValue::Scalar {
-                    key,
-                    value: value.clone(),
-                });
+                let value = budget.copy(value)?;
+                budget.push(&mut out, KeyValue::Scalar { key, value })?;
                 *at += 1;
             }
             _ => return Err(err(ErrorCode::InvalidKeydata, base..base, None)),
@@ -944,6 +1211,208 @@ mod tests {
         bytes
     }
 
+    fn hierarchy_surface() -> Vec<u8> {
+        let source = compact_surface();
+        let mut bytes = vec![0_u8; 384];
+        bytes[..48].copy_from_slice(&source[..48]);
+        bytes[28..32].copy_from_slice(&((384_u32 << 8) | 7).to_le_bytes());
+        for (node, right, hull) in [(48_usize, 56_i32, 96_i32), (76, 0, 148), (104, 0, 200)] {
+            bytes[node..node + 4].copy_from_slice(&right.to_le_bytes());
+            bytes[node + 4..node + 8].copy_from_slice(&hull.to_le_bytes());
+            bytes[node + 20..node + 24].copy_from_slice(&1.0_f32.to_le_bytes());
+            bytes[node + 24..node + 27].copy_from_slice(&[250, 249, 248]);
+        }
+        bytes[75] = 0x95;
+        for (offset, link, flags) in [(144_usize, -96_i32, 5_u32), (224, 10, 4), (304, 20, 4)] {
+            bytes[offset..offset + 80].copy_from_slice(&source[76..156]);
+            bytes[offset + 4..offset + 8].copy_from_slice(&link.to_le_bytes());
+            bytes[offset + 8..offset + 12].copy_from_slice(&((5 << 8) | flags).to_le_bytes());
+        }
+        bytes[158..160].copy_from_slice(&[0x7e, 0x65]);
+        bytes
+    }
+    #[test]
+    fn retained_budget_counts_every_output_buffer_before_growth() {
+        let mut collision = stream(&modern_body(0));
+        collision.extend(stream(&hierarchy_surface()));
+        let keys = b"solid { mass 5 child { name x } } second { key value }\0\0suffix";
+        let expected = parse_payload(
+            &collision,
+            keys,
+            2,
+            Profile::SourcePcPolygon,
+            Limits::default(),
+        )
+        .unwrap();
+        let bytes = expected.retained_bytes();
+        let limits = Limits {
+            max_retained_bytes: bytes,
+            ..Limits::default()
+        };
+        assert_eq!(
+            parse_payload(&collision, keys, 2, Profile::SourcePcPolygon, limits).unwrap(),
+            expected
+        );
+        for limit in [1, collision.len(), bytes - 1] {
+            assert_eq!(
+                parse_payload(
+                    &collision,
+                    keys,
+                    2,
+                    Profile::SourcePcPolygon,
+                    Limits {
+                        max_retained_bytes: limit,
+                        ..limits
+                    }
+                )
+                .unwrap_err()
+                .code,
+                ErrorCode::RetainedLimit
+            );
+        }
+        let mut standalone = Vec::new();
+        for word in [16_i32, 0, 2, 0] {
+            standalone.extend_from_slice(&word.to_le_bytes());
+        }
+        standalone.extend_from_slice(&collision);
+        standalone.extend_from_slice(keys);
+        let full =
+            parse_standalone(&standalone, Profile::SourcePcPolygon, Limits::default()).unwrap();
+        assert_eq!(full.retained_bytes(), bytes + 16);
+        assert_eq!(
+            parse_standalone(
+                &standalone,
+                Profile::SourcePcPolygon,
+                Limits {
+                    max_retained_bytes: bytes + 15,
+                    ..limits
+                }
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::RetainedLimit
+        );
+        assert_eq!(
+            parse_standalone(
+                &standalone,
+                Profile::SourcePcPolygon,
+                Limits {
+                    max_retained_bytes: bytes + 16,
+                    ..limits
+                }
+            )
+            .unwrap(),
+            full
+        );
+    }
+
+    #[test]
+    fn retains_ordered_hierarchy_enclosing_geometry_and_raw_headers() {
+        let surface = hierarchy_surface();
+        let asset = parse_payload(
+            &stream(&surface),
+            &[0],
+            1,
+            Profile::SourcePcPolygon,
+            Limits::default(),
+        )
+        .unwrap();
+        let solid = &asset.solids[0];
+        let tree = solid.hierarchy.as_ref().unwrap();
+        assert_eq!(
+            solid
+                .convexes
+                .iter()
+                .map(|piece| piece.client_data)
+                .collect::<Vec<_>>(),
+            [20, 10]
+        );
+        assert_eq!(solid.geometries.len(), 3);
+        assert_eq!(tree.nodes.len(), 3);
+        assert_eq!(tree.nodes[0].children, Some([2, 1]));
+        assert_eq!(tree.nodes[0].hull, Some(0));
+        assert_eq!(solid.geometries[0].subtree, Some(0));
+        assert_eq!(tree.nodes[0].raw, &surface[48..76]);
+        assert_eq!(tree.nodes[0].box_sizes(), [250, 249, 248]);
+        assert_eq!(solid.geometries[0].raw_header, &surface[144..160]);
+        assert_eq!(solid.convexes[0].geometry, 1);
+        assert_eq!(solid.convexes[1].geometry, 2);
+        assert!(
+            solid
+                .convexes
+                .iter()
+                .all(|piece| solid.geometries[piece.geometry].subtree.is_none())
+        );
+    }
+
+    #[test]
+    fn signed_geometry_point_offsets_can_share_an_earlier_point_array() {
+        let mut surface = hierarchy_surface();
+        surface[304..308].copy_from_slice(&(-48_i32).to_le_bytes());
+        surface[312..316].copy_from_slice(&(5_u32 << 8).to_le_bytes());
+        let asset = parse_payload(
+            &stream(&surface),
+            &[0],
+            1,
+            Profile::SourcePcPolygon,
+            Limits::default(),
+        )
+        .unwrap();
+        let solid = &asset.solids[0];
+        assert_eq!(solid.geometries[1].points, solid.geometries[2].points);
+        assert_eq!(solid.geometries[1].points[0].raw_range.start, 4 + 256);
+    }
+
+    #[test]
+    fn hierarchy_cycles_links_geometry_ranges_and_total_hull_limits_are_bounded() {
+        let parse = |surface: &[u8], limits| {
+            parse_payload(&stream(surface), &[0], 1, Profile::SourcePcPolygon, limits)
+        };
+        let surface = hierarchy_surface();
+        assert_eq!(
+            parse(
+                &surface,
+                Limits {
+                    max_tree_nodes: 2,
+                    ..Limits::default()
+                }
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::TreeLimit
+        );
+        assert_eq!(
+            parse(
+                &surface,
+                Limits {
+                    max_convex_pieces: 2,
+                    ..Limits::default()
+                }
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::TreeLimit
+        );
+        let mut cycle = surface.clone();
+        cycle[104..108].copy_from_slice(&(-56_i32).to_le_bytes());
+        assert_eq!(
+            parse(&cycle, Limits::default()).unwrap_err().code,
+            ErrorCode::TreeCycle
+        );
+        let mut link = surface.clone();
+        link[148..152].copy_from_slice(&1_i32.to_le_bytes());
+        assert_eq!(
+            parse(&link, Limits::default()).unwrap_err().code,
+            ErrorCode::InvalidSurface
+        );
+        let mut truncated = surface;
+        truncated[152..156].copy_from_slice(&((1_u32 << 8) | 5).to_le_bytes());
+        assert_eq!(
+            parse(&truncated, Limits::default()).unwrap_err().code,
+            ErrorCode::InvalidConvex
+        );
+    }
+
     #[test]
     fn parses_modern_polygon_geometry_metadata_and_exact_keydata() {
         let collision = stream(&modern_body(0));
@@ -971,8 +1440,9 @@ mod tests {
         );
         assert_eq!(solid.convexes.len(), 1);
         assert_eq!(solid.convexes[0].client_data, 5);
-        assert_eq!(solid.convexes[0].triangles[0].point_indices, [2, 1, 0]);
-        assert_eq!(solid.convexes[0].triangles[0].material_index, 3);
+        let geometry = &solid.geometries[solid.convexes[0].geometry];
+        assert_eq!(geometry.triangles[0].point_indices, [2, 1, 0]);
+        assert_eq!(geometry.triangles[0].material_index, 3);
         assert_eq!(asset.key_data.raw, keydata);
         assert_eq!(asset.key_data.terminator_range.len(), 2);
         assert_eq!(asset.key_data.blocks[0].name, b"solid");
@@ -1033,3 +1503,7 @@ mod tests {
         );
     }
 }
+mod fluid;
+mod solid;
+pub use fluid::FluidProperties;
+pub use solid::SolidProperties;

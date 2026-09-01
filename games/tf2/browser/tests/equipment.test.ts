@@ -68,13 +68,19 @@ test("local inventory owns each implemented hitscan unlock exactly once", () => 
   }
 })
 
-test("unavailable projectile solvers and unimplemented items cannot be offered or restored as class base items", () => {
+test("stock Demoman launchers are offered and restored without admitting unimplemented items", () => {
   const state = decodeEquipmentState(new Uint8Array(nativeEquipment))
-  expect(state.inventory).toHaveLength(62)
-  for (const definition of [19, 20, 735]) {
-    expect(state.inventory.some(entry => entry.item.definitionIndex === definition)).toBe(false)
-    expect(state.classes.some(player => [...player.items, ...player.baseItems].some(item => item.definitionIndex === definition))).toBe(false)
+  expect(state.inventory).toHaveLength(64)
+  const demoman = state.classes.find(player => player.class === 4)!
+  for (const [definition, weapon, slot, script] of [[19, 18, 0, "grenadelauncher"], [20, 3, 1, "pipebomblauncher"]] as const) {
+    const entries = state.inventory.filter(entry => entry.item.definitionIndex === definition)
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toMatchObject({ weapon, classSlots: [{ class: 4, slot, weapon, selectionSlot: slot,
+      hud: { script: `scripts/tf_weapon_${script}.ctx`, ammoDisplay: "clip-and-reserve" } }] })
+    for (const items of [demoman.items, demoman.baseItems]) expect(items.filter(item => item.definitionIndex === definition)).toEqual([entries[0]!.item])
   }
+  expect(state.inventory.some(entry => entry.item.definitionIndex === 735)).toBe(false)
+  expect(state.classes.some(player => [...player.items, ...player.baseItems].some(item => item.definitionIndex === 735))).toBe(false)
 })
 
 test("the ten executable rocket and flare unlocks each have one inventory item", () => {

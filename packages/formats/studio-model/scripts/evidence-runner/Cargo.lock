@@ -410,6 +410,9 @@ dependencies = [
 [[package]]
 name = "playsrc-phy"
 version = "0.1.0"
+dependencies = [
+ "playsrc-keyvalues",
+]
 
 [[package]]
 name = "playsrc-studio-model"

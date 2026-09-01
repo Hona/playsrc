@@ -1,4 +1,5 @@
 mod gameplay_protocol;
+mod rigid_admission;
 mod admission_metrics;
 pub mod gameplay_replay;
 mod memory;
@@ -381,6 +382,52 @@ impl playsrc_movement::Tracer for SharedWorld {
 }
 
 impl playsrc_tf2::GameplayWorld for SharedWorld {
+    fn trace_world(&self, start: [f32; 3], end: [f32; 3], hull: playsrc_collision::Hull, mask: u32) -> Result<playsrc_movement::Trace, playsrc_movement::Error> {
+        Self::movement_trace(self.world.trace_hull(start, end, hull, mask).map_err(|_| playsrc_movement::Error::new(
+            playsrc_movement::Operation::Trace, playsrc_movement::FailureKind::Malformed, "world-only collision"))?)
+    }
+    fn trace_brush(&self, model: usize, request: playsrc_collision::ObjectTraceRequest) -> Result<playsrc_movement::Trace, playsrc_movement::Error> {
+        Self::movement_trace(self.world.trace_brush_model(model, request).map_err(|_| playsrc_movement::Error::new(
+            playsrc_movement::Operation::Trace, playsrc_movement::FailureKind::Malformed, "brush collision"))?)
+    }
+    fn trace_static(&self, identity: u64, start: [f32; 3], end: [f32; 3], hull: playsrc_collision::Hull, mask: u32) -> Result<playsrc_movement::Trace, playsrc_movement::Error> {
+        let fail = || playsrc_movement::Error::new(playsrc_movement::Operation::Trace, playsrc_movement::FailureKind::Missing, "static collision binding");
+        let snapshot = self.snapshot.read().map_err(|_| fail())?;
+        let object = snapshot.records().iter().find(|object| object.identity == identity && object.role == playsrc_collision::ObjectRole::StaticProp).ok_or_else(fail)?;
+        Self::movement_trace(self.world.trace_object_hull_at(&snapshot, playsrc_collision::ObjectTraceRequest {
+            identity, transform: object.transform, start, end, hull, mask,
+        }).map_err(|_| fail())?)
+    }
+    fn static_query_bounds(&self) -> Result<Vec<(u64, playsrc_collision::Hull)>, playsrc_movement::Error> {
+        let fail = || playsrc_movement::Error::new(playsrc_movement::Operation::Trace, playsrc_movement::FailureKind::Missing, "static entity query bounds");
+        self.snapshot.read().map_err(|_| fail())?.records().iter().filter(|object| object.role == playsrc_collision::ObjectRole::StaticProp)
+            .map(|object| Ok((object.identity, match &object.shape {
+                playsrc_collision::SnapshotShape::Physics(query) => query.bounds(object.transform).map_err(|_| fail())?,
+                playsrc_collision::SnapshotShape::BoundingBox { .. } => object.bounds,
+                _ => return Err(fail()),
+            }))).collect()
+    }
+    fn trace_projectile_solid(&self,start:[f32;3],end:[f32;3],mask:u32)->Result<playsrc_tf2::ProjectileSolidTrace,playsrc_movement::Error> {
+        let fail=||playsrc_movement::Error::new(playsrc_movement::Operation::Trace,playsrc_movement::FailureKind::Missing,"projectile solid ray binding");
+        let snapshot=self.snapshot.read().map_err(|_|fail())?;
+        self.world.trace_snapshot_ray(&snapshot,playsrc_collision::SnapshotRayRequest {start,end,mask,scope:playsrc_collision::TraceScope::Everything,ignored:&[]},|candidate|playsrc_tf2::projectile_solid_group(candidate.collision_group)).map(Into::into).map_err(|_|fail())
+    }
+    fn trace_grenade_entities(&self,start:[f32;3],end:[f32;3],thrower:u32,hitboxes:&[playsrc_tf2::PosedPlayerHitbox])->Result<Option<playsrc_tf2::GrenadeEntityHit>,playsrc_movement::Error> {
+        let fail=||playsrc_movement::Error::new(playsrc_movement::Operation::Trace,playsrc_movement::FailureKind::Missing,"grenade entity-only ray binding");
+        let snapshot=self.snapshot.read().map_err(|_|fail())?;
+        let mask=playsrc_collision::CONTENTS_HITBOX|playsrc_collision::CONTENTS_MONSTER|playsrc_collision::CONTENTS_SOLID;
+        let other=self.world.trace_snapshot_ray(&snapshot,playsrc_collision::SnapshotRayRequest {start,end,mask,scope:playsrc_collision::TraceScope::EntitiesOnly,ignored:&[]},|candidate|!matches!(candidate.collision_group,0|1|20|24|25) && candidate.identity!=u64::from(thrower)).map_err(|_|fail())?;
+        let mut nearest:Option<playsrc_tf2::GrenadeEntityHit>=None;
+        for candidate in hitboxes {
+            if candidate.entity==thrower {continue;}
+            let bounds=playsrc_collision::StudioHitbox {identity:candidate.hitbox,group:candidate.group,bone:candidate.bone,physics_bone:candidate.physics_bone,bone_contents:candidate.bone_contents,surface:None,minimum:candidate.minimum,maximum:candidate.maximum,bone_to_world:&candidate.bone_to_world};
+            if let Some(hit)=playsrc_collision::trace_studio_hitboxes(playsrc_collision::StudioHitboxRequest {entity:u64::from(candidate.entity),origin:candidate.origin,scale:1.0,start,end,hull:playsrc_collision::Hull {mins:[0.0;3],maxs:[0.0;3]},mask,hitboxes:std::slice::from_ref(&bounds)}).map_err(|_|fail())? {
+                if nearest.is_none_or(|current|hit.fraction<current.fraction || hit.start_solid && !current.start_solid) {nearest=Some(playsrc_tf2::GrenadeEntityHit {identity:candidate.entity,team:candidate.team,fraction:hit.fraction,start_solid:hit.start_solid,normal:hit.normal,end:hit.end,combat_item:false});}
+            }
+        }
+        if other.start_solid || (other.fraction<1.0 && nearest.is_none_or(|hit|other.fraction<=hit.fraction)) {return Err(fail());}
+        Ok(nearest)
+    }
     fn bot_update_milliseconds(&self)->f64{
         #[cfg(target_arch="wasm32")]
         let actual=unsafe{monotonic_milliseconds()};
@@ -1272,9 +1319,12 @@ unsafe fn compile_map(
             compile_presentation(presentation_inputs).map_err(|_| 9_u32)?
         };
         memory_metrics[4] = memory::live_bytes();
-        let registry = surface_property_registry(&resources).map_err(|_| 5_u32)?;
+        let registry = Arc::new(surface_property_registry(&resources).map_err(|_| 5_u32)?);
         let acoustic_scene = acoustic_scene::Scene::new(acoustic_scene::Materials::compile(
             &canonical, &bsp, &map_materials, &resources, &registry).map_err(|_| 5_u32)?);
+        let physical_models=if canonical.static_props.occurrences.is_empty() && collision_world.displacements.is_empty() {
+            Some(playsrc_collision::PhysicalModelInventory::compile(&collision_world,&bsp,playsrc_collision::SnapshotLimits::default()).map_err(|_|5_u32)?)
+        }else{None};
         drop(bsp);
         memory_metrics[10] = memory::live_bytes();
         compile_metrics[11..17].copy_from_slice(&presentation_metrics);
@@ -1422,6 +1472,7 @@ unsafe fn compile_map(
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            None,
         )
         .map_err(|_| 5_u32)?;
         let mut impact_surfaces = BTreeMap::<i16, Vec<(u32, u8, [f32; 4])>>::new();
@@ -1513,6 +1564,18 @@ unsafe fn compile_map(
         };
         let mut session =
             playsrc_tf2::Session::connected(gameplay_world.clone(), spawn.position, map, rules);
+        if let Some(physical_models)=physical_models {
+            let (sticky,studio_rigid)=rigid_admission::prepare(&runtime.entities,&resources,&studio_models,&resource_hashes,&registry).map_err(|_|5_u32)?;
+            let config=playsrc_physics::EnvironmentConfig {random_seed:1,air_density:2.0,timestep:playsrc_movement::Configuration::default().tick_interval,gravity:[0.0,0.0,-playsrc_movement::Configuration::default().gravity],max_bodies:4096,max_events:16384,performance:playsrc_physics::PerformanceSettings {max_collisions_per_body:10,..playsrc_physics::PerformanceSettings::default()}};
+            let world=playsrc_tf2::rigid_world::RigidWorld::from_world_model(config,&collision,&physical_models,Arc::clone(&registry)).map_err(|_|5_u32)?;
+            session.install_rigid_world(world,sticky,&physical_models,&studio_rigid).map_err(|_|5_u32)?;
+            let followers = session.follower_collisions().map_err(|_| 5_u32)?;
+            if !followers.is_empty() {
+                let snapshot = compile_collision_snapshot(None, &collision, &collision_templates, 1, None,
+                    Some(&|identity| session.map_collision_entity(identity)), &BTreeMap::new(), &BTreeMap::new(), Some(&followers)).map_err(|_| 5_u32)?;
+                gameplay_world.replace_snapshot(snapshot);
+            }
+        }
         session.set_initial_view_angles(spawn.angles);
         session.restore_equipment(&local_equipment().lock().expect("local equipment").persist()).map_err(|_| 11_u32)?;
         if let Some((_, bytes)) = resources
@@ -1750,7 +1813,10 @@ pub fn inspect_native_gameplay<T>(handle: u32, inspect: impl FnOnce(&playsrc_tf2
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn native_movement_query_storage_bytes(handle: u32) -> Option<usize> {
-    with(handle, |slot| slot.gameplay_world.as_ref().map(|world| world.movement_queries.lock().expect("movement queries").storage_bytes())).flatten()
+    with(handle, |slot| slot.gameplay_world.as_ref().map(|world| {
+        let scratch = world.movement_queries.lock().expect("movement queries").storage_bytes();
+        scratch + world.snapshot().physics_query_storage_bytes()
+    })).flatten()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1764,7 +1830,7 @@ pub fn verify_control_point_match(bsp: &[u8], resources: &[u8], crossing:Option<
         let (index, _) = decode(handle).ok_or("invalid map handle")?;
         let mut command = [0_u8; gameplay_protocol::HEADER_BYTES];
         command[..4].copy_from_slice(b"PCMD");
-        command[4..8].copy_from_slice(&9_u32.to_le_bytes());
+        command[4..8].copy_from_slice(&10_u32.to_le_bytes());
         command[48..52].copy_from_slice(&(gameplay_protocol::HEADER_BYTES as u32).to_le_bytes());
         command[32..36].copy_from_slice(&(3_u32 | (2 << 16)).to_le_bytes());
         let bot_add_tick=std::env::var("PLAYSRC_NATIVE_BOT_ADD_TICK").ok().map(|value|value.parse::<u32>().map_err(|_|"invalid bot command tick")).transpose()?.unwrap_or(1);
@@ -5510,6 +5576,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
         let mut velocities = BTreeMap::new();
         let current_revision = collision_revision.saturating_add(1);
         let prior_collision = gameplay_world.snapshot();
+        let followers = match candidate.follower_collisions() { Ok(value) => value, Err(_) => fail!(11) };
         let current_collision = match retain_collision_snapshot(
             &prior_collision,
             templates,
@@ -5518,6 +5585,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
             Some(&|identity|candidate.map_collision_entity(identity)),
             &transforms,
             &velocities,
+            Some(&followers),
         ) {
             Some(value) => value,
             None => match compile_collision_snapshot(
@@ -5529,6 +5597,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
                 Some(&|identity|candidate.map_collision_entity(identity)),
                 &transforms,
                 &velocities,
+                Some(&followers),
             ) {
                 Ok(value) => value,
                 Err(_) => fail!(11),
@@ -5648,6 +5717,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
                 Some(&|identity|candidate.map_collision_entity(identity)),
                 &transforms,
                 &velocities,
+                Some(&followers),
             ) {
                 Ok(value) => value,
                 Err(_) => fail!(15),
@@ -5675,11 +5745,6 @@ pub unsafe extern "C" fn playsrc_game_advance(
         gameplay_world.set_movement_time(
             candidate.tick() as f32 * playsrc_simulation::DEFAULT_TICK_INTERVAL,
         );
-        let physics_results = if index == 0 {
-            input.physics_results.as_slice()
-        } else {
-            &[]
-        };
         if index == 0 {
             let mut retained = gameplay_world.player_hitboxes.lock().expect("player hitbox models");
             for class in playsrc_tf2::PlayerClass::ALL {
@@ -5689,7 +5754,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
                 }
             }
         }
-        match candidate.into_advanced(input.command, physics_results, &rocket_results, None) {
+        match candidate.into_advanced(input, &rocket_results, None) {
             Ok((advanced, mut value)) => {
                 playsrc_tf2::admission_metrics::emit(playsrc_tf2::admission_metrics::ADVANCED, 0);
                 candidate = advanced;
@@ -5855,6 +5920,9 @@ fn gameplay_error_code(error: &playsrc_tf2::Error) -> u32 {
         playsrc_tf2::Error::ControlPoints(_) => 15,
         playsrc_tf2::Error::MissingWeapon { .. } => 17,
         playsrc_tf2::Error::Damage(_) => 16,
+        playsrc_tf2::Error::MissingRigidResources => 18,
+        playsrc_tf2::Error::Rigid(_) => 19,
+        playsrc_tf2::Error::ProjectileTrace(_) => 20,
     }
 }
 
@@ -5930,7 +5998,8 @@ fn resolve_rocket_traces(
                         playsrc_collision::SnapshotShape::BrushModel { model } => format!("brush-model:{model}"),
                         playsrc_collision::SnapshotShape::BoundingBox { bounds } => format!("bbox:{bounds:?}"),
                         playsrc_collision::SnapshotShape::OrientedBox { bounds } => format!("obb:{bounds:?}"),
-                        playsrc_collision::SnapshotShape::Physics(shape) => format!("physics:{}", shape.identity),
+                        playsrc_collision::SnapshotShape::Physics(shape) => format!("physics:{}", shape.geometry().identity),
+                        playsrc_collision::SnapshotShape::Follower { parent, query } => format!("follower:{parent}:{}", query.geometry().identity),
                     };
                     format!("id={} role={:?} shape={} contents={} surface={} transform={:?}", record.identity, record.role, shape, record.contents, record.surface_flags, record.transform)
                 });
@@ -5981,9 +6050,6 @@ fn merge_producer(
     current
         .lifecycle_events
         .splice(0..0, previous.lifecycle_events.drain(..));
-    current
-        .physics_requests
-        .splice(0..0, previous.physics_requests.drain(..));
     current
         .rocket_trace_requests
         .splice(0..0, previous.rocket_trace_requests.drain(..));
@@ -6180,9 +6246,10 @@ fn encode_snapshot(
     // the vector after inserting that large section repeatedly moves its bytes.
     #[allow(non_snake_case)]
     let MAX = (64_usize * 1024 * 1024).checked_sub(extensions.collision_snapshot.len())?;
+    if producer.pipebomb_count > 31 || producer.charge_progress.is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value)) { return None; }
     let mut out = Vec::new();
     extend(&mut out, b"PSSN", MAX)?;
-    u32_field(&mut out, 31, MAX)?;
+    u32_field(&mut out, 33, MAX)?;
     u64_field(&mut out, snapshot.tick, MAX)?;
     extend(
         &mut out,
@@ -6255,14 +6322,14 @@ fn encode_snapshot(
     for count in [
         producer.activities.len(),
         producer.lifecycle_events.len(),
-        producer.physics_requests.len(),
+        producer.pipebomb_count,
         producer.rocket_trace_requests.len(),
         producer.radius_damage_requests.len(),
         producer.mover_requests.len(),
         producer.contact_reconcile_requests.len(),
         producer.map_effects.len(),
         producer.regenerate_animation_events.len(),
-        2 + usize::from(extensions.payload_constraint_blocked),
+        1 + usize::from(!producer.rigid_physics_ready) + usize::from(extensions.payload_constraint_blocked),
     ] {
         u32_field(&mut out, u32::try_from(count).ok()?, MAX)?;
     }
@@ -6313,10 +6380,12 @@ fn encode_snapshot(
         u64_field(&mut out, state.reload_due_tick.unwrap_or(u64::MAX), MAX)?;
         u64_field(&mut out, state.charge_begin_tick.unwrap_or(u64::MAX), MAX)?;
         u64_field(&mut out, state.first_primary_tick, MAX)?;
-        // PSSN31 keeps the weapon-specific scalar in the same 48-byte record:
-        // Minigun viewmodel rate, rifle charge, or the existing Spy state.
+        // The weapon-specific scalar stays in the same 48-byte record:
+        // Minigun viewmodel rate, launcher/rifle charge, or the existing Spy state.
         let scalar = if state.weapon == playsrc_tf2::Weapon::Minigun {
             state.prefire_playback_rate()
+        } else if state.weapon == playsrc_tf2::Weapon::StickybombLauncher {
+            producer.charge_progress.unwrap_or(0.0)
         } else { snapshot
             .spy
             .map_or(state.charged_damage, |spy| match state.weapon {
@@ -6481,6 +6550,7 @@ fn encode_snapshot(
                     playsrc_tf2::weapon::WeaponActivity::FistRight => 11,
                     playsrc_tf2::weapon::WeaponActivity::Prefire => 12,
                     playsrc_tf2::weapon::WeaponActivity::Postfire => 13,
+                    playsrc_tf2::weapon::WeaponActivity::Pullback => 14,
                 },
                 0,
                 0,
@@ -6511,38 +6581,6 @@ fn encode_snapshot(
                 0,
                 0,
             ],
-            MAX,
-        )?;
-    }
-    for request in &producer.physics_requests {
-        extend(
-            &mut out,
-            &[
-                match request.operation {
-                    playsrc_tf2::ProjectilePhysicsOperation::Create => 1,
-                    playsrc_tf2::ProjectilePhysicsOperation::Step => 2,
-                    playsrc_tf2::ProjectilePhysicsOperation::DisableMotion => 3,
-                    playsrc_tf2::ProjectilePhysicsOperation::Destroy => 4,
-                },
-                0,
-                0,
-                0,
-            ],
-            MAX,
-        )?;
-        u32_field(&mut out, request.projectile, MAX)?;
-        u64_field(&mut out, request.tick, MAX)?;
-        floats(
-            &mut out,
-            request
-                .position
-                .into_iter()
-                .chain(request.velocity)
-                .chain(request.orientation)
-                .chain(request.angular_velocity)
-                .chain(request.hull.mins)
-                .chain(request.hull.maxs)
-                .chain([request.gravity_scale, request.friction, request.elasticity]),
             MAX,
         )?;
     }
@@ -6620,7 +6658,8 @@ fn encode_snapshot(
             MAX,
         )?;
     }
-    extend(&mut out, &[1, 1, 0, 0, 2, 1, 0, 0], MAX)?;
+    if !producer.rigid_physics_ready {extend(&mut out,&[1,1,0,0],MAX)?;}
+    extend(&mut out, &[2, 1, 0, 0], MAX)?;
     if extensions.payload_constraint_blocked {
         extend(&mut out, &[3, 1, 0, 0], MAX)?;
     }
@@ -7591,6 +7630,7 @@ fn encode_random_draw(
         playsrc_tf2::RandomDecision::ScorchShotBounceVelocity => (11, 0, playsrc_tf2::SoundQueryPhase::Inspect),
         playsrc_tf2::RandomDecision::ScorchShotBounceAngle => (12, 0, playsrc_tf2::SoundQueryPhase::Inspect),
         playsrc_tf2::RandomDecision::ScorchShotBounceSign => (13, 0, playsrc_tf2::SoundQueryPhase::Inspect),
+        playsrc_tf2::RandomDecision::BlastForce => (66, 0, playsrc_tf2::SoundQueryPhase::Inspect),
     };
     extend(
         output,
@@ -7638,6 +7678,7 @@ fn encode_audio_event(
                 playsrc_tf2::AudioEventIdentity::ItemPickup => 3,
                 playsrc_tf2::AudioEventIdentity::ItemMaterialize => 4,
                 playsrc_tf2::AudioEventIdentity::PlayerFeedback => 5,
+                playsrc_tf2::AudioEventIdentity::PhysicsImpact => 6,
             },
             event.definition.code(),
             match event.source_kind {
@@ -7645,12 +7686,14 @@ fn encode_audio_event(
                 playsrc_tf2::AudioSourceKind::World => 2,
                 playsrc_tf2::AudioSourceKind::LocalListener => 3,
                 playsrc_tf2::AudioSourceKind::ControlPoint => 4,
+                playsrc_tf2::AudioSourceKind::Projectile => 5,
             },
             u8::from(event.owner_identity.is_some()),
             event.samples.wave,
             match event.action {
                 playsrc_tf2::AudioAction::Play => 0,
                 playsrc_tf2::AudioAction::PlayAtPitch(_) => 4,
+                playsrc_tf2::AudioAction::PlayAtVolume(_) => 5,
                 playsrc_tf2::AudioAction::Stop => 1,
                 playsrc_tf2::AudioAction::FadeIn(_) => 2,
                 playsrc_tf2::AudioAction::FadeOut(_) => 3,
@@ -7675,6 +7718,7 @@ fn encode_audio_event(
             playsrc_tf2::AudioAction::FadeIn(seconds)
             | playsrc_tf2::AudioAction::FadeOut(seconds) => seconds,
             playsrc_tf2::AudioAction::PlayAtPitch(pitch) => pitch,
+            playsrc_tf2::AudioAction::PlayAtVolume(volume) => volume,
             _ => 0.0,
         }],
         limit,
@@ -7913,6 +7957,7 @@ fn projectile_code(kind: playsrc_tf2::ProjectileKind) -> u8 {
         playsrc_tf2::ProjectileKind::Sticky => 2,
         playsrc_tf2::ProjectileKind::Syringe => 3,
         playsrc_tf2::ProjectileKind::Flare => 4,
+        playsrc_tf2::ProjectileKind::Grenade => 5,
     }
 }
 
@@ -9002,7 +9047,7 @@ fn collision_object_templates(
     const CONTENTS_SOLID: u32 = 0x1;
     let limits = playsrc_collision::SnapshotLimits::default();
     let mut output = Vec::new();
-    let mut physics_shapes = BTreeMap::new();
+    let mut physics_shapes: BTreeMap<String, Arc<dyn playsrc_collision::PhysicsQuery>> = BTreeMap::new();
     let mut render_bounds = BTreeMap::new();
     for entity in &graph.entities {
         let identity = u64::try_from(entity.index).map_err(|_| ())?;
@@ -9093,8 +9138,9 @@ fn collision_object_templates(
                 )
                 .map_err(|_| ())?,
             );
-            physics_shapes.insert(model, Arc::clone(&shape));
-            shape
+            let query: Arc<dyn playsrc_collision::PhysicsQuery> = Arc::new(playsrc_physics::ShapeCastModel::new(shape).map_err(|_| ())?);
+            physics_shapes.insert(model, Arc::clone(&query));
+            query
         };
         output.push(CollisionObjectTemplate {
             input: playsrc_collision::ObjectInput {
@@ -9173,8 +9219,9 @@ fn collision_object_templates(
                 })
                 .map_err(|_| ())?,
             );
-            physics_shapes.insert(model.clone(), Arc::clone(&shape));
-            shape
+            let query: Arc<dyn playsrc_collision::PhysicsQuery> = Arc::new(playsrc_physics::ShapeCastModel::new(shape).map_err(|_| ())?);
+            physics_shapes.insert(model.clone(), Arc::clone(&query));
+            query
         };
         output.push(CollisionObjectTemplate {
             input: playsrc_collision::ObjectInput {
@@ -9223,12 +9270,17 @@ fn compile_collision_snapshot(
     resolve: Option<&dyn Fn(u32)->Option<playsrc_entity::EntityCollisionState>>,
     transform_overrides: &BTreeMap<u64, playsrc_collision::Transform>,
     velocity_overrides: &BTreeMap<u64, [f32; 3]>,
+    followers: Option<&BTreeMap<u32, Vec<playsrc_collision::ObjectInput>>>,
 ) -> Result<playsrc_collision::Snapshot, playsrc_collision::Error> {
-    let inputs = templates
-        .iter()
-        .map(|template| {
-            let mut input = template.input.clone();
-            (input.transform,input.enabled)=collision_entity_state(template,resolve);
+    let inputs = templates.iter().flat_map(|template| {
+        let replacement = u32::try_from(template.input.identity).ok().and_then(|identity| followers?.get(&identity));
+        std::iter::once((&template.input, true)).chain(replacement.into_iter().flatten().map(|input| (input, false))).map(move |(source, parent)| {
+            let mut input = source.clone();
+            if parent {
+                (input.transform,input.enabled)=collision_entity_state(template,resolve);
+                // Follower hits report the parent; retain its support velocity, not its proxy solid.
+                if replacement.is_some() { input.enabled = false; }
+            }
             if let Some(transform) = transform_overrides.get(&input.identity) {
                 input.transform = *transform;
             }
@@ -9236,7 +9288,7 @@ fn compile_collision_snapshot(
                 input.linear_velocity = *velocity;
             }
             input
-        })
+        }) })
         .chain(
             latest
                 .into_iter()
@@ -9248,14 +9300,14 @@ fn compile_collision_snapshot(
                     volume_contents: false,
                     transform: playsrc_collision::Transform {
                         origin: building.position,
-                        angles: [0.0, building.yaw_degrees, 0.0],
+                        angles: [0.0; 3],
                     },
                     linear_velocity: [0.0; 3],
                     angular_velocity: [0.0; 3],
                     collision_group: 0,
                     contents: playsrc_collision::CONTENTS_SOLID,
                     surface_flags: 0,
-                    shape: playsrc_collision::SnapshotShape::OrientedBox {
+                    shape: playsrc_collision::SnapshotShape::BoundingBox {
                         bounds: building.object.hull(),
                     },
                 }),
@@ -9280,16 +9332,21 @@ fn retain_collision_snapshot(
     resolve: Option<&dyn Fn(u32)->Option<playsrc_entity::EntityCollisionState>>,
     transform_overrides: &BTreeMap<u64, playsrc_collision::Transform>,
     velocity_overrides: &BTreeMap<u64, [f32; 3]>,
+    followers: Option<&BTreeMap<u32, Vec<playsrc_collision::ObjectInput>>>,
 ) -> Option<playsrc_collision::Snapshot> {
-    if previous.records().len() != templates.len()||latest.is_some_and(|snapshot|!snapshot.buildings.is_empty()) {
+    if latest.is_some_and(|snapshot|!snapshot.buildings.is_empty()) {
         return None;
     }
-    for (record, template) in previous.records().iter().zip(templates) {
+    let mut records = previous.records().iter();
+    for template in templates {
+        let replacement = u32::try_from(template.input.identity).ok().and_then(|identity| followers?.get(&identity));
+        let record = records.next()?;
         let identity = template.input.identity;
         if record.identity != identity {
             return None;
         }
-        let (runtime,enabled)=collision_entity_state(template,resolve);
+        let (runtime,mut enabled)=collision_entity_state(template,resolve);
+        if replacement.is_some() { enabled = false; }
         let transform = transform_overrides
             .get(&identity)
             .copied()
@@ -9301,7 +9358,14 @@ fn retain_collision_snapshot(
         if record.transform != transform || record.linear_velocity != velocity || record.enabled != enabled {
             return None;
         }
+        for input in replacement.into_iter().flatten() {
+            let record = records.next()?;
+            if record.identity != input.identity || record.shape != input.shape || record.enabled != input.enabled
+                || record.transform.origin.map(f32::to_bits) != input.transform.origin.map(f32::to_bits)
+                || record.transform.angles.map(f32::to_bits) != input.transform.angles.map(f32::to_bits) { return None; }
+        }
     }
+    if records.next().is_some() { return None; }
     Some(previous.with_identity(revision))
 }
 
@@ -9325,31 +9389,31 @@ fn setup_gate_child_collision_follows_parent_and_invalidates_retention() {
     }];
     let transforms = BTreeMap::new();
     let velocities = BTreeMap::new();
-    let closed = compile_collision_snapshot(None, &world, &templates, 1, None, None, &transforms, &velocities).unwrap();
+    let closed = compile_collision_snapshot(None, &world, &templates, 1, None, None, &transforms, &velocities, None).unwrap();
     let request = map.input(0, 0, b"Open", playsrc_entity::Variant::Void).unwrap().mover_requests[0];
     map.apply_mover_results(1, &[playsrc_tf2::MoverResult { request_id: request.request_id, entity: 0,
         kind: playsrc_tf2::MoverResultKind::Completed, transform: playsrc_entity::Transform { origin: [0.0,0.0,128.0], angles: [0.0;3] }, carry: [0.0;3] }]).unwrap();
     assert!(map.entity_descends_from(1,0));
     assert!(!map.entity_descends_from(0,1));
     let resolve = |identity| map.collision_entity(identity);
-    assert!(retain_collision_snapshot(&closed, &templates, 2, None, Some(&resolve), &transforms, &velocities).is_none(), "moving a gate child must invalidate the static collision cache");
-    let opened = compile_collision_snapshot(Some(&closed), &world, &templates, 2, None, Some(&resolve), &transforms, &velocities).unwrap();
+    assert!(retain_collision_snapshot(&closed, &templates, 2, None, Some(&resolve), &transforms, &velocities, None).is_none(), "moving a gate child must invalidate the static collision cache");
+    let opened = compile_collision_snapshot(Some(&closed), &world, &templates, 2, None, Some(&resolve), &transforms, &velocities, None).unwrap();
     let child = map.entity_world_transform(1).unwrap();
     assert!(child.origin[2] > 120.0);
     assert_eq!(opened.records()[0].transform.origin, child.origin);
-    assert!(retain_collision_snapshot(&opened, &templates, 3, None, Some(&resolve), &transforms, &velocities).is_some());
+    assert!(retain_collision_snapshot(&opened, &templates, 3, None, Some(&resolve), &transforms, &velocities, None).is_some());
     map.input(2,1,b"DisableCollision",playsrc_entity::Variant::Void).unwrap();
     let resolve=|identity|map.collision_entity(identity);
-    assert!(retain_collision_snapshot(&opened,&templates,4,None,Some(&resolve),&transforms,&velocities).is_none());
-    let disabled=compile_collision_snapshot(Some(&opened),&world,&templates,4,None,Some(&resolve),&transforms,&velocities).unwrap();
+    assert!(retain_collision_snapshot(&opened,&templates,4,None,Some(&resolve),&transforms,&velocities,None).is_none());
+    let disabled=compile_collision_snapshot(Some(&opened),&world,&templates,4,None,Some(&resolve),&transforms,&velocities,None).unwrap();
     assert!(!disabled.records()[0].enabled,"checkpoint sign collision inputs reach collision, not just rendering");
     map.input(3,1,b"EnableCollision",playsrc_entity::Variant::Void).unwrap();
     let resolve=|identity|map.collision_entity(identity);
-    let enabled=compile_collision_snapshot(Some(&disabled),&world,&templates,5,None,Some(&resolve),&transforms,&velocities).unwrap();
+    let enabled=compile_collision_snapshot(Some(&disabled),&world,&templates,5,None,Some(&resolve),&transforms,&velocities,None).unwrap();
     assert!(enabled.records()[0].enabled);
     let removed = |_| None;
-    assert!(retain_collision_snapshot(&opened, &templates, 4, None, Some(&removed), &transforms, &velocities).is_none());
-    let removed = compile_collision_snapshot(Some(&opened), &world, &templates, 4, None, Some(&removed), &transforms, &velocities).unwrap();
+    assert!(retain_collision_snapshot(&opened, &templates, 4, None, Some(&removed), &transforms, &velocities, None).is_none());
+    let removed = compile_collision_snapshot(Some(&opened), &world, &templates, 4, None, Some(&removed), &transforms, &velocities, None).unwrap();
     assert!(!removed.records()[0].enabled);
 }
 
@@ -9871,6 +9935,7 @@ fn compile_static_prop_section(
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            None,
         )
         .map_err(|_| ())?
     };
@@ -12271,6 +12336,7 @@ fn load_cached_presentation(
         "models/weapons/w_models/w_rocket_airstrike/w_rocket_airstrike.mdl".to_owned(),
         "models/weapons/w_models/w_flaregun_shell.mdl".to_owned(),
         "models/weapons/w_models/w_stickybomb.mdl".to_owned(),
+        "models/weapons/w_models/w_grenade_grenadelauncher.mdl".to_owned(),
         "models/weapons/w_models/w_syringe_proj.mdl".to_owned(),
         "models/weapons/c_models/c_soldier_arms.mdl".to_owned(),
         "models/weapons/c_models/c_demo_arms.mdl".to_owned(),
@@ -12598,6 +12664,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         "models/weapons/w_models/w_rocket_airstrike/w_rocket_airstrike.mdl".to_owned(),
         "models/weapons/w_models/w_flaregun_shell.mdl".to_owned(),
         "models/weapons/w_models/w_stickybomb.mdl".to_owned(),
+        "models/weapons/w_models/w_grenade_grenadelauncher.mdl".to_owned(),
         "models/weapons/w_models/w_syringe_proj.mdl".to_owned(),
         "models/weapons/c_models/c_soldier_arms.mdl".to_owned(),
         "models/weapons/c_models/c_demo_arms.mdl".to_owned(),
@@ -14888,7 +14955,7 @@ fn compile_cosmetic_particles(b: &BTreeMap<String, &[u8]>, decoders: &TextureDec
     compile_particle_materials(&registry, &[playsrc_particle::DefinitionLookup::Name("superrare_burning1")], b, decoders, &[])
 }
 
-fn particle_material_dependencies(registry: &playsrc_particle::Registry, roots: &[playsrc_particle::DefinitionLookup<'_>]) -> Result<Vec<String>, ()> {
+pub fn particle_material_dependencies(registry: &playsrc_particle::Registry, roots: &[playsrc_particle::DefinitionLookup<'_>]) -> Result<Vec<String>, ()> {
     let closure = registry.dependency_closure(roots).map_err(|error| { eprintln!("Particle admission: {error}"); })?;
     let mut materials = std::collections::BTreeSet::new();
     for index in closure.definitions {
@@ -15777,7 +15844,8 @@ mod tests {
     #[ignore = "requires the configured particle registry resource graph"]
     fn configured_game_particle_registry_is_executable() {
         let graph = std::env::var("PLAYSRC_PYRO_GRAPH").unwrap();
-        let bytes = playsrc_asset_graph::read_resource_set(std::path::Path::new(&graph), Some("gameplay")).unwrap();
+        let objects=std::path::PathBuf::from(std::env::var("PLAYSRC_RESOURCE_OBJECT_DIRECTORY").expect("configured graph object directory"));
+        let bytes = playsrc_asset_graph::read_resource_set(std::path::Path::new(&graph), &objects, Some("gameplay")).unwrap();
         let resources = bundle(&bytes).unwrap();
         let paths = std::str::from_utf8(resources[playsrc_tf2::particle_resources::SOURCE_LIST]).unwrap();
         let sources = paths.lines().map(|path| playsrc_particle::PcfSource { logical_path: path, bytes: resources[path] }).collect::<Vec<_>>();
@@ -15816,8 +15884,9 @@ mod tests {
     #[ignore = "requires the exact configured projectile graph and map BSP"]
     fn configured_pyro_particle_materials_compile() {
         let graph = std::env::var("PLAYSRC_PYRO_GRAPH").expect("configured Pyro graph path");
+        let objects=std::path::PathBuf::from(std::env::var("PLAYSRC_RESOURCE_OBJECT_DIRECTORY").expect("configured graph object directory"));
         let bytes =
-            playsrc_asset_graph::read_resource_set(std::path::Path::new(&graph), Some("gameplay")).unwrap();
+            playsrc_asset_graph::read_resource_set(std::path::Path::new(&graph), &objects, Some("gameplay")).unwrap();
         let resources = bundle(&bytes).unwrap();
         let decoders = TextureDecoders::new(&resources);
         let sources = std::str::from_utf8(resources[playsrc_tf2::particle_resources::SOURCE_LIST]).unwrap().lines().map(|path| playsrc_particle::PcfSource {
@@ -15868,6 +15937,211 @@ mod tests {
     }
 
     #[test]
+    #[ignore="requires the configured gameplay graph, object directory and jump_beef BSP"]
+    fn configured_grenade_hits_live_bot_and_retires_after_its_removal_think() {
+        let graph=std::env::var("PLAYSRC_PYRO_GRAPH").unwrap();
+        let objects=std::env::var("PLAYSRC_RESOURCE_OBJECT_DIRECTORY").unwrap();
+        let resources=playsrc_asset_graph::read_resource_set(std::path::Path::new(&graph),std::path::Path::new(&objects),Some("gameplay")).unwrap();
+        let bsp=std::fs::read(std::env::var("PLAYSRC_PYRO_BSP").unwrap()).unwrap();
+        let section=ResourceSection {pointer:resources.as_ptr(),length:resources.len()};
+        let hash:[u8;32]=Sha256::digest(&resources).into();
+        let handle=unsafe {playsrc_compile_map(bsp.as_ptr(),bsp.len(),1,&section,1,hash.as_ptr(),0)};
+        assert_ne!(handle,0);
+        struct WorldHandle(u32);
+        impl Drop for WorldHandle {fn drop(&mut self){playsrc_dispose(self.0);}}
+        let _handle=WorldHandle(handle);
+        let mut initial=[0_u8;gameplay_protocol::HEADER_BYTES];
+        initial[..4].copy_from_slice(b"PCMD");initial[4..8].copy_from_slice(&10_u32.to_le_bytes());
+        initial[36..40].copy_from_slice(&u32::MAX.to_le_bytes());initial[48..52].copy_from_slice(&(gameplay_protocol::HEADER_BYTES as u32).to_le_bytes());
+        assert_eq!(unsafe {playsrc_game_advance(handle,initial.as_ptr(),initial.len(),1)},1);
+        let index=decode(handle).unwrap().0;
+        let mut session={let slots=slots().lock().unwrap();let slot=&slots[index];assert_eq!(slot.error,0);slot.session.as_ref().unwrap().clone()};
+        // Navigation is a controlled fixture for the stopped bot. World collision,
+        // projectile PHY, player model, skeleton and hitboxes remain authored resources.
+        let mut nav=Vec::new();
+        for value in [playsrc_nav::MAGIC,16,2,bsp.len() as u32] {nav.extend(value.to_le_bytes());}
+        nav.push(1);nav.extend(0_u16.to_le_bytes());nav.push(1);nav.extend(1_u32.to_le_bytes());
+        nav.extend(1_u32.to_le_bytes());nav.extend(0_u32.to_le_bytes());
+        for value in [4800.0_f32,3300.0,-3136.0,5400.0,3480.0,-3136.0,-3136.0,-3136.0] {nav.extend(value.to_le_bytes());}
+        nav.extend([0;16]);nav.push(0);nav.extend(0_u32.to_le_bytes());nav.extend(0_u16.to_le_bytes());nav.extend([0;8+8+16+8+4]);nav.extend(0_u32.to_le_bytes());
+        let nav=playsrc_nav::parse(&nav,playsrc_nav::Profile::TeamFortress2,Some(bsp.len() as u32),Default::default()).unwrap();
+        let actors=playsrc_entity::parse(b"{\"classname\"\"info_player_teamspawn\"\"TeamNum\"\"2\"\"origin\"\"5100 3376 -3135.96875\"}{\"classname\"\"info_player_teamspawn\"\"TeamNum\"\"3\"\"origin\"\"4900 3376 -3135.96875\"}{\"classname\"\"team_train_watcher\"\"train\"\"fixture-cart\"\"start_node\"\"first\"}{\"classname\"\"func_tracktrain\"\"targetname\"\"fixture-cart\"\"origin\"\"4900 3376 -3136\"}{\"classname\"\"path_track\"\"targetname\"\"first\"\"target\"\"second\"\"origin\"\"4900 3376 -3136\"}{\"classname\"\"path_track\"\"targetname\"\"second\"\"origin\"\"5100 3376 -3136\"}",Default::default()).unwrap();
+        session.configure_navigation(nav,&actors).unwrap();
+        use playsrc_tf2::{Command,PlayerClass,PlayerTeam,Weapon,ProjectileEventKind,ProjectileKind};
+        let idle=Command {nextbot_stop:true,..Command::default()};
+        session.advance(Command {select_team:Some(PlayerTeam::Red),..idle}).unwrap();
+        session.advance(Command {select_class:Some(PlayerClass::Demoman),select_weapon:Some(Weapon::GrenadeLauncher),..idle}).unwrap();
+        let without_bots=session.clone();
+        let joined=session.advance(Command {bot_request:Some(playsrc_tf2::bot::Request {operation:playsrc_tf2::bot::Operation::Add,count:1,class:Some(PlayerClass::Heavy),team:Some(PlayerTeam::Blue),difficulty:playsrc_tf2::bot::Difficulty::Easy}),..idle}).unwrap();
+        let enemy=joined.bots[0].identity;
+        session.advance(Command {bot_control:Some(playsrc_tf2::bot::Control::Teleport {identity:enemy,position:[4900.0,3376.0,-3135.96875],pitch_degrees:0.0,yaw_degrees:0.0}),..idle}).unwrap();
+        session.set_position([5100.0,3376.0,-3135.96875]).unwrap();
+        for _ in 0..40 {session.advance(idle).unwrap();}
+        let before=session.bot_world().unwrap().health(enemy).unwrap();
+        let aim=Command {pitch_degrees:10.0,movement:playsrc_movement::Command {yaw_degrees:180.0,..Default::default()},..idle};
+        let shot=session.advance(Command {fire:true,..aim}).unwrap();
+        let fire=shot.projectile_events.iter().find(|event|event.kind==ProjectileEventKind::Fire&&event.projectile_kind==ProjectileKind::Grenade).unwrap();
+        let projectile=fire.projectile;let birth=fire.tick;
+        let mut impact=None;
+        for _ in 0..24 {
+            let frame=session.advance(aim).unwrap();
+            if let Some(event)=frame.projectile_events.iter().find(|event|event.kind==ProjectileEventKind::Explode&&event.projectile==projectile) {impact=Some(event.clone());break;}
+        }
+        let impact=impact.expect("authored player hitboxes must receive the pipe before its fuse");
+        assert!(impact.tick-birth<20);
+        assert_eq!(session.radius_damage_requests()[0].direct_target,Some(enemy));
+        assert_eq!(session.radius_damage_requests()[0].base_damage,100.0);
+        let after=session.bot_world().unwrap().health(enemy).unwrap();
+        assert_eq!(after,before-100);
+        assert!(session.producer_snapshot().projectiles.is_empty());
+        assert!(session.rigid_world().unwrap().projectile_body(projectile).is_some());
+        session.advance(aim).unwrap();
+        assert!(session.rigid_world().unwrap().projectile_body(projectile).is_none());
+        eprintln!("GRENADE_BOT_REPORT enemy={enemy} before={before} after={after} flight_ticks={}",impact.tick-birth);
+        for (label,team,x,pitch,expect_explosion,expect_bounce) in [
+            ("enemy-overlap",PlayerTeam::Blue,5067.0,10.0,true,false),
+            ("friendly-grace",PlayerTeam::Red,4900.0,10.0,false,false),
+            ("friendly-late",PlayerTeam::Red,4700.0,10.0,false,true),
+        ] {
+            let mut session=without_bots.clone();
+            let joined=session.advance(Command {bot_request:Some(playsrc_tf2::bot::Request {operation:playsrc_tf2::bot::Operation::Add,count:1,class:Some(PlayerClass::Heavy),team:Some(team),difficulty:playsrc_tf2::bot::Difficulty::Easy}),..idle}).unwrap();
+            let actor=joined.bots[0].identity;
+            session.advance(Command {bot_control:Some(playsrc_tf2::bot::Control::Teleport {identity:actor,position:[x,3376.0,-3135.96875],pitch_degrees:0.0,yaw_degrees:0.0}),..idle}).unwrap();
+            session.set_position([5100.0,3376.0,-3135.96875]).unwrap();
+            for _ in 0..40 {session.advance(idle).unwrap();}
+            let aim=Command {pitch_degrees:pitch,..aim};
+            let mut frame=session.advance(Command {fire:true,..aim}).unwrap();
+            let birth=frame.projectile_events.iter().find(|event|event.kind==ProjectileEventKind::Fire).unwrap().tick;
+            let gameplay=slots().lock().unwrap()[index].gameplay_world.as_ref().unwrap().clone();
+            let mut explosion=None;
+            let mut bounce=false;
+            let mut contact_tick=None;
+            let mut minimum_x=5100.0_f32;
+            for _ in 0..28 {
+                let hitboxes=gameplay.player_hitboxes.lock().unwrap().poses.values().flat_map(|(_,_,poses)|poses.clone()).collect::<Vec<_>>();
+                if let Some(event)=frame.projectile_events.iter().find(|event|event.kind==ProjectileEventKind::Explode) {
+                    explosion=Some(event.tick);
+                    let hit=playsrc_tf2::GameplayWorld::trace_grenade_entities(&gameplay,event.position,event.position,1,&hitboxes).unwrap().expect("overlap must be inside an authored hitbox");
+                    assert!(hit.start_solid);
+                    break;
+                }
+                for projectile in &frame.projectiles {
+                    minimum_x=minimum_x.min(projectile.position[0]);
+                    let end=std::array::from_fn(|axis|projectile.position[axis]+projectile.velocity[axis]*0.015);
+                    if let Some(hit)=playsrc_tf2::GameplayWorld::trace_grenade_entities(&gameplay,projectile.position,end,1,&hitboxes).unwrap() {
+                        assert_eq!(hit.identity,actor);
+                        contact_tick.get_or_insert(frame.tick);
+                        let world=session.rigid_world().unwrap();
+                        let body=world.projectile_body(projectile.identity).unwrap();
+                        let physical=world.physics().body(body).unwrap().published().unwrap();
+                        bounce|=physical.linear_velocity.map(f32::to_bits)!=projectile.velocity.map(f32::to_bits);
+                        if expect_bounce {
+                            let dot=projectile.velocity.iter().zip(hit.normal).map(|(v,n)|v*n).sum::<f32>();
+                            let reflected=std::array::from_fn(|axis|if hit.start_solid {-0.2*projectile.velocity[axis]}else{((-2.0*hit.normal[axis])*dot+projectile.velocity[axis])*0.45});
+                            let mut expected=world.clone();
+                            expected.set_body_velocity(body,Some(reflected),(!hit.start_solid).then(||projectile.angular_velocity.map(|v|v*-0.5))).unwrap();
+                            let expected=expected.physics().body(body).unwrap().published().unwrap();
+                            assert_eq!(physical.linear_velocity.map(f32::to_bits),expected.linear_velocity.map(f32::to_bits),"{label}");
+                            assert_eq!(physical.angular_velocity.map(f32::to_bits),expected.angular_velocity.map(f32::to_bits),"{label}");
+                        }
+                    }
+                }
+                if bounce || !expect_explosion && minimum_x<x-24.0 {break;}
+                frame=session.advance(aim).unwrap();
+            }
+            assert_eq!(explosion.is_some(),expect_explosion,"{label}");
+            assert_eq!(bounce,expect_bounce,"{label}: contact={contact_tick:?} minimum_x={minimum_x} remaining={:?}",frame.projectiles);
+            if expect_explosion {
+                assert!(explosion.unwrap()-birth<=1,"{label}");
+                assert_eq!(session.radius_damage_requests()[0].direct_target,Some(actor));
+                assert_eq!(session.bot_world().unwrap().health(actor),Some(200));
+            }else {
+                let age=(contact_tick.expect("the projectile must actually trace the teammate")-birth) as f32*0.015;
+                assert_eq!(age>=0.25,expect_bounce,"{label}: collision context timing");
+                assert_eq!(session.bot_world().unwrap().health(actor),Some(300));
+                if !expect_bounce {assert!(minimum_x<x-24.0,"{label}: pipe must pass through the teammate before the collision context");}
+            }
+            eprintln!("GRENADE_CONTACT_REPORT {label} explosion={explosion:?} contact_tick={contact_tick:?} bounce={bounce} minimum_x={minimum_x}");
+        }
+        let mut session=without_bots;
+        for _ in 0..40 {session.advance(idle).unwrap();}
+        let shot=session.advance(Command {fire:true,..aim}).unwrap();
+        let projectile=shot.projectiles[0].identity;
+        let followers={
+            let world=session.rigid_world().unwrap();
+            world.physics().bodies().iter().filter_map(|body|match world.owner(body.identity()) {
+                Some(playsrc_tf2::rigid_world::BodyOwner::BoneFollower {entity,..})=>Some((entity,body.identity())),_=>None
+            }).collect::<Vec<_>>()
+        };
+        let parent=followers.first().expect("the configured Soldier owns authored bone followers").0;
+        let bodies=followers.into_iter().filter_map(|(entity,body)|(entity==parent).then_some(body)).collect::<Vec<_>>();
+        assert_eq!(bodies.len(),17);
+        let (collision, templates) = { let slots = slots().lock().unwrap();
+            (slots[index].collision.as_ref().unwrap().clone(), slots[index].collision_templates.clone()) };
+        let scene = |session: &playsrc_tf2::Session<SharedWorld>, previous: Option<&playsrc_collision::Snapshot>| {
+            let followers = session.follower_collisions().unwrap();
+            compile_collision_snapshot(previous, &collision, &templates, session.tick(), None,
+                Some(&|identity| session.map_collision_entity(identity)), &BTreeMap::new(), &BTreeMap::new(), Some(&followers)).unwrap()
+        };
+        let published = session.follower_collisions().unwrap();
+        let initial = scene(&session, None);
+        assert_eq!(published[&parent].len(), 17);
+        assert!(!initial.records().iter().find(|record| record.identity == u64::from(parent)).unwrap().enabled, "the parent must not retain a solid first-shape proxy");
+        for input in &published[&parent] {
+            let record = initial.records().iter().find(|record| record.identity == input.identity).unwrap();
+            assert_eq!(record.transform, input.transform);
+            let center = std::array::from_fn::<_, 3, _>(|axis| (record.bounds.mins[axis] + record.bounds.maxs[axis]) * 0.5);
+            let mut start = center; start[0] -= 128.0;
+            let mut end = center; end[0] += 128.0;
+            let hit = collision.trace_snapshot_hull(&initial, playsrc_collision::SnapshotTraceRequest {
+                start, end, hull: playsrc_collision::Hull { mins: [-18.0; 3], maxs: [18.0; 3] },
+                mask: playsrc_collision::MASK_SOLID, scope: playsrc_collision::TraceScope::EntitiesOnly, ignored: &[],
+            }, |candidate| candidate.identity == input.identity).unwrap();
+            assert_eq!(hit.entity_identity(), Some(u64::from(parent)), "each authored follower must clip and report its parent");
+            let ignored = [u64::from(parent)];
+            assert!(!collision.trace_snapshot_hull(&initial, playsrc_collision::SnapshotTraceRequest {
+                start, end, hull: playsrc_collision::Hull { mins: [-18.0; 3], maxs: [18.0; 3] },
+                mask: playsrc_collision::MASK_SOLID, scope: playsrc_collision::TraceScope::EntitiesOnly, ignored: &ignored,
+            }, |candidate| candidate.identity == input.identity).unwrap().did_hit());
+        }
+        let no_transforms = BTreeMap::new();
+        let no_velocities = BTreeMap::new();
+        let resolve = |identity| session.map_collision_entity(identity);
+        assert!(retain_collision_snapshot(&initial, &templates, session.tick() + 1, None, Some(&resolve), &no_transforms, &no_velocities, Some(&published)).is_some());
+        let mut moved = published.clone();
+        moved.get_mut(&parent).unwrap()[1].transform.origin[0] += 32.0;
+        assert!(retain_collision_snapshot(&initial, &templates, session.tick() + 1, None, Some(&resolve), &no_transforms, &no_velocities, Some(&moved)).is_none());
+        let changed = compile_collision_snapshot(Some(&initial), &collision, &templates, session.tick() + 1, None, Some(&resolve), &no_transforms, &no_velocities, Some(&moved)).unwrap();
+        let moved_input = &moved[&parent][1];
+        assert_eq!(changed.records().iter().find(|record| record.identity == moved_input.identity).unwrap().transform, moved_input.transform);
+        let velocities = BTreeMap::from([(u64::from(parent), [0.0, 0.0, 128.0])]);
+        let moving = compile_collision_snapshot(Some(&initial), &collision, &templates, session.tick() + 1, None, Some(&resolve), &no_transforms, &velocities, Some(&published)).unwrap();
+        assert_eq!(moving.object_velocity(u64::from(parent)).unwrap().0, [0.0, 0.0, 128.0]);
+        assert!(!moving.records().iter().find(|record| record.identity == u64::from(parent)).unwrap().enabled);
+        let collisions=|session:&playsrc_tf2::Session<SharedWorld>| {
+            let world=session.rigid_world().unwrap();let projectile=world.projectile_body(projectile).unwrap();
+            bodies.iter().map(|body|world.physics().collision_solver().unwrap().should_collide(*body,projectile)).collect::<Vec<_>>()
+        };
+        let before=collisions(&session);
+        assert!(before.iter().any(|value|*value));
+        session.map_input(parent,b"DisableCollision",playsrc_entity::Variant::Void).unwrap();
+        for _ in 0..10 {session.advance(idle).unwrap();}
+        assert_eq!(collisions(&session),before,"followers have their own solidity after creation");
+        let disabled = scene(&session, Some(&initial));
+        assert_eq!(disabled.records().iter().filter(|record| matches!(record.shape, playsrc_collision::SnapshotShape::Follower { parent: owner, .. } if owner == u64::from(parent))).count(), 17);
+        session.map_input(parent,b"Kill",playsrc_entity::Variant::Void).unwrap();
+        assert!(session.follower_collisions().unwrap()[&parent].is_empty(), "removed parents withdraw scene colliders before body cleanup");
+        session.advance(idle).unwrap();
+        let world=session.rigid_world().unwrap();
+        for body in &bodies {assert!(world.owner(*body).is_none());assert!(world.physics().body(*body).is_none());}
+        assert!(world.projectile_body(projectile).is_some());
+        let removed = scene(&session, Some(&disabled));
+        assert!(!removed.records().iter().any(|record| matches!(record.shape, playsrc_collision::SnapshotShape::Follower { parent: owner, .. } if owner == u64::from(parent))));
+        assert_eq!(initial.records().iter().filter(|record| matches!(record.shape, playsrc_collision::SnapshotShape::Follower { parent: owner, .. } if owner == u64::from(parent))).count(), 17, "retained collision snapshots remain immutable");
+        eprintln!("FOLLOWER_REMOVAL_REPORT parent={parent} bodies={} projectile_retained=true",bodies.len());
+    }
+
+    #[test]
     #[ignore = "requires an exact configured map resource set and BSP"]
     fn configured_map_particle_admission() {
         let bsp = std::fs::read(std::env::var("PLAYSRC_PARTICLE_BSP").expect("configured BSP path")).unwrap();
@@ -15889,7 +16163,8 @@ mod tests {
     fn configured_burning_flames_models_lifetimes_and_independent_effects() {
         use playsrc_particle::{AdvanceRequest, ControlPoint, Event, EventCommand};
         let graph = std::env::var("PLAYSRC_COSMETIC_GRAPH").expect("configured graph path");
-        let bytes = playsrc_asset_graph::read_resource_set(std::path::Path::new(&graph), Some("gameplay")).unwrap();
+        let objects=std::path::PathBuf::from(std::env::var("PLAYSRC_RESOURCE_OBJECT_DIRECTORY").expect("configured graph object directory"));
+        let bytes = playsrc_asset_graph::read_resource_set(std::path::Path::new(&graph), &objects, Some("gameplay")).unwrap();
         let resources = bundle(&bytes).unwrap();
         let decoders = TextureDecoders::new(&resources);
         let registry = playsrc_particle::Registry::from_pcf(&[playsrc_particle::PcfSource { logical_path: "particles/item_fx.pcf", bytes: resources["particles/item_fx.pcf"] }], Default::default()).unwrap();
@@ -16490,6 +16765,32 @@ mod tests {
     }
 
     #[test]
+    fn static_query_bindings_do_not_use_the_terrain_trace_or_dynamic_entries() {
+        use playsrc_tf2::GameplayWorld;
+        let world = Arc::new(playsrc_collision::World::empty());
+        for role in [playsrc_collision::ObjectRole::Entity, playsrc_collision::ObjectRole::StaticProp] {
+            let snapshot = playsrc_collision::Snapshot::compile(&world, 1, vec![playsrc_collision::ObjectInput {
+                identity: 42, role, enabled: true, volume_contents: false,
+                transform: playsrc_collision::Transform::IDENTITY,
+                linear_velocity: [0.0; 3], angular_velocity: [0.0; 3], collision_group: 0,
+                contents: playsrc_collision::CONTENTS_SOLID, surface_flags: 0,
+                shape: playsrc_collision::SnapshotShape::BoundingBox { bounds: playsrc_collision::Hull { mins: [-1.0; 3], maxs: [1.0; 3] } },
+            }], Default::default()).unwrap();
+            let scene = SharedWorld::new(world.clone(), snapshot, BTreeMap::new());
+            let hull = playsrc_collision::Hull { mins: [0.0; 3], maxs: [0.0; 3] };
+            assert_eq!(scene.trace_world([-10.0, 0.0, 0.0], [10.0, 0.0, 0.0], hull, playsrc_collision::MASK_SOLID).unwrap().fraction, 1.0);
+            let bounds = scene.static_query_bounds().unwrap();
+            if role == playsrc_collision::ObjectRole::StaticProp {
+                assert_eq!(bounds, [(42, playsrc_collision::Hull { mins: [-1.0; 3], maxs: [1.0; 3] })]);
+                assert_eq!(scene.trace_static(42, [-10.0, 0.0, 0.0], [10.0, 0.0, 0.0], hull, playsrc_collision::MASK_SOLID).unwrap().hit, Some(42));
+            } else {
+                assert!(bounds.is_empty());
+                assert!(scene.trace_static(42, [-10.0, 0.0, 0.0], [10.0, 0.0, 0.0], hull, playsrc_collision::MASK_SOLID).is_err());
+            }
+        }
+    }
+
+    #[test]
     fn stale_handles_do_not_read_reused_slots() {
         let mut guard = slots().lock().unwrap();
         guard.clear();
@@ -16678,7 +16979,7 @@ mod tests {
     fn command_and_snapshot_binary_contract_is_stable() {
         let mut bytes = vec![0; 84];
         bytes[..4].copy_from_slice(b"PCMD");
-        bytes[4..8].copy_from_slice(&9_u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&10_u32.to_le_bytes());
         bytes[8..12].copy_from_slice(&240_f32.to_le_bytes());
         bytes[16..20].copy_from_slice(&100_f32.to_le_bytes());
         bytes[24..28].copy_from_slice(&(-30_f32).to_le_bytes());
@@ -16687,7 +16988,7 @@ mod tests {
         bytes[36..40].copy_from_slice(&77_u32.to_le_bytes());
         bytes[48..52].copy_from_slice(&84_u32.to_le_bytes());
         let input = gameplay_protocol::decode(&bytes).unwrap();
-        let command = input.command;
+        let command = input;
         assert_eq!(command.movement.forward, 240.);
         assert_eq!(command.up, 100.);
         assert_eq!(command.pitch_degrees, -30.);
@@ -16703,10 +17004,9 @@ mod tests {
             command.select_weapon,
             Some(playsrc_tf2::Weapon::StickybombLauncher)
         );
-        assert!(input.physics_results.is_empty());
         for flags in 0..4 {
             bytes[57] = 0x80 | flags;
-            assert_eq!(gameplay_protocol::decode(&bytes).unwrap().command.weapon_preferences,
+            assert_eq!(gameplay_protocol::decode(&bytes).unwrap().weapon_preferences,
                 Some(playsrc_tf2::WeaponPreferences { remember_active: flags & 1 != 0, remember_last: flags & 2 != 0 }));
         }
         for invalid in [1, 4, 0x84, 0xff] { bytes[57] = invalid; assert!(gameplay_protocol::decode(&bytes).is_none()); }
@@ -16715,7 +17015,6 @@ mod tests {
         assert_eq!(
             gameplay_protocol::decode(&bytes)
                 .unwrap()
-                .command
                 .objective_configuration,
             Some(playsrc_tf2::ctf::RuleConfiguration {
                 captures_per_round: 1,
@@ -16735,7 +17034,6 @@ mod tests {
         assert_eq!(
             gameplay_protocol::decode(&bytes)
                 .unwrap()
-                .command
                 .bot_control,
             Some(playsrc_tf2::bot::Control::Teleport {
                 identity: 4,
@@ -16752,7 +17050,6 @@ mod tests {
         assert_eq!(
             gameplay_protocol::decode(&bytes)
                 .unwrap()
-                .command
                 .bot_configuration,
             Some(playsrc_tf2::bot::Configuration {
                 quota: 7,
@@ -16779,7 +17076,6 @@ mod tests {
             assert_eq!(
                 gameplay_protocol::decode(&bytes)
                     .unwrap()
-                    .command
                     .select_class,
                 Some(class)
             );
@@ -16903,6 +17199,9 @@ mod tests {
             medigun_releasing: false,
         };
         let producer = playsrc_tf2::ProducerSnapshot {
+            rigid_physics_ready:false,
+            pipebomb_count: 0,
+            charge_progress: None,
             decapitations: 800,
             revenge_crits: 35,
             tick: 9,
@@ -16914,37 +17213,9 @@ mod tests {
             health: 175,
             maximum_health: 200,
             conditions: [0; 5],
-            weapons: vec![playsrc_tf2::weapon::WeaponRuntime {
-                hitscan: playsrc_tf2::hitscan::State::default(),
-                deploy_multiplier: 1.0,
-                spinup_seconds: 0.75,
-                postfire_until: None,
-                discard_chambered_on_reload: false,
-                generation: 0,
-                critical: playsrc_tf2::critical::WeaponState::default(),
-                last_flare_deny_time: 0.0,
-                last_extinguish_time: 0.0,
-                resolved_profile: playsrc_tf2::weapon::WeaponProfile::configured(playsrc_tf2::Weapon::Original),
-                weapon: playsrc_tf2::Weapon::Original,
-                clip: 3,
-                reserve: 20,
-                reload: playsrc_tf2::weapon::ReloadPhase::Ready,
-                next_primary_tick: 20,
-                reload_due_tick: None,
-                charge_begin_tick: None,
-                first_primary_tick: 0,
-
-                minigun_state: playsrc_tf2::weapon::MinigunState::Idle,
-                spin_begin_tick: None,
-                firing_begin_tick: None,
-                idle_due_tick: None,
-                smack_due_tick: None,
-                push_due_time: None,
-                charged_damage: 0.0,
-                next_secondary_tick: 0,
-                unzoom_due_tick: None,
-                rezoom_due_tick: None,
-                rezoom_after_shot: false,
+            weapons: vec![{
+                let mut weapon=playsrc_tf2::weapon::WeaponRuntime::full(playsrc_tf2::Weapon::Original);
+                weapon.clip=3;weapon.next_primary_tick=20;weapon
             }],
             flame_points: Vec::new(),
             shotgun_pellets: Vec::new(),
@@ -16956,7 +17227,6 @@ mod tests {
                 activity: playsrc_tf2::weapon::WeaponActivity::PrimaryAttack,
             }],
             lifecycle_events: Vec::new(),
-            physics_requests: Vec::new(),
             rocket_trace_requests: Vec::new(),
             radius_damage_requests: Vec::new(),
             mover_requests: Vec::new(),
@@ -17043,9 +17313,9 @@ mod tests {
         // Two ten-wave masks add four wire bytes without another allocation.
         assert!(metrics.requests <= 10 && metrics.bytes <= 5376, "snapshot encoder retains redundant staging/growth");
         assert_eq!(metrics.live, 1288);
-        let expected_hash = "8c449b6099679f8d31bd5360c38042b098a8090ec018305005c0f1683e49fdc6";
+        let expected_hash = "1ca656ec3d47902a06a1a8f81357747900ea5da8d029a1393c8a916979dff4df";
         assert_eq!(format!("{:x}", Sha256::digest(&encoded)), expected_hash);
-        assert_eq!(&encoded[..8], b"PSSN\x1f\0\0\0");
+        assert_eq!(&encoded[..8], b"PSSN\x21\0\0\0");
         assert_eq!(encoded.len(), 1268);
         assert_eq!(&encoded[1132..1148], &[0; 16]);
         assert_eq!(i32::from_le_bytes(encoded[1148..1152].try_into().unwrap()), 800);
@@ -17088,6 +17358,23 @@ mod tests {
         assert_eq!(heavy_bytes[276], weapon_code(playsrc_tf2::Weapon::Minigun));
         assert_eq!(f32::from_le_bytes(heavy_bytes[320..324].try_into().unwrap()), 1.5);
         assert_eq!(heavy_bytes.len(), encoded.len());
+
+        let mut demoman = snapshot.clone();
+        demoman.class = playsrc_tf2::PlayerClass::Demoman;
+        demoman.weapon = Some(playsrc_tf2::Weapon::StickybombLauncher);
+        let mut pipes = producer.clone();
+        pipes.pipebomb_count = 8;
+        pipes.charge_progress = Some(0.375);
+        pipes.weapons[0] = playsrc_tf2::weapon::WeaponRuntime::full(playsrc_tf2::Weapon::StickybombLauncher);
+        let pipe_bytes = encode_snapshot(&demoman, &pipes, 2, None, SnapshotExtensions {
+            random_state, random_draws: &[], audio_events: &[], soundscape: Default::default(),
+            rocket_results: &[], mover_results: &[], collision_snapshot: &collision_snapshot,
+            entity_presentation: &entity_presentation, payload_constraint_blocked: false, combat_decals: &[],
+        }).unwrap();
+        assert_eq!(u32::from_le_bytes(pipe_bytes[96..100].try_into().unwrap()), 8);
+        assert_eq!(f32::from_le_bytes(pipe_bytes[320..324].try_into().unwrap()), 0.375);
+        assert_eq!(pipe_bytes[276], weapon_code(playsrc_tf2::Weapon::StickybombLauncher));
+        assert_eq!(pipe_bytes.len(), encoded.len());
 
         let constrained = encode_snapshot(
             &snapshot,
@@ -17167,7 +17454,7 @@ mod tests {
     fn fixed_tick_continuation_retains_buttons_and_consumes_results_and_selectors() {
         let mut bytes = vec![0; 84 + 80];
         bytes[..4].copy_from_slice(b"PCMD");
-        bytes[4..8].copy_from_slice(&9_u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&10_u32.to_le_bytes());
         bytes[8..12].copy_from_slice(&240_f32.to_le_bytes());
         bytes[12..16].copy_from_slice(&(-120_f32).to_le_bytes());
         bytes[16..20].copy_from_slice(&100_f32.to_le_bytes());
@@ -17199,7 +17486,6 @@ mod tests {
         assert!(
             gameplay_protocol::decode(&continued)
                 .unwrap()
-                .command
                 .bot_request
                 .is_none()
         );
@@ -17215,7 +17501,7 @@ mod tests {
             u16::from_le_bytes(stopped[42..44].try_into().unwrap()),
             0x8000
         );
-        let stopped_command = gameplay_protocol::decode(&stopped).unwrap().command;
+        let stopped_command = gameplay_protocol::decode(&stopped).unwrap();
         assert!(stopped_command.nextbot_stop);
         assert!(stopped_command.bot_request.is_none());
     }

@@ -11,17 +11,11 @@ import { buildSourceBundle } from "./source-bundle"
 import { decodeSnapshot, encodeCommand } from "../../../games/tf2/browser/src/codec"
 import { decodeModelPoseOutput, encodeModelPoseBatch } from "../../../games/tf2/browser/src/presentation"
 import { parsePresentationArtifacts } from "../../../games/tf2/browser/src/artifacts"
+import { verifyParticleMaterials, type ParticleMaterialExpectation } from "./verify-particle-materials"
 import { buildTf2Wasm } from "./tf2-wasm-build"
 import { encodeResourceBatch, parseResourceSet } from "@playsrc/asset-store/graph"
 
-const EXPECTED_MAP_BYTES = 27_137_800
-const EXPECTED_MAP_SHA256 = "15cdbb753aedac70a3eee1a2f0dfe627455e25619650a534eba1a9280e47aa17"
 const EXPECTED_BSP_SHA256 = "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959"
-const EXPECTED_HDR_BYTES=63_346_564
-const EXPECTED_HDR_SHA256="fa66808948ae3c0f8ebc94fcab5d203bd5032d59dc30712614da80dd619ee986"
-const EXPECTED_LDR_DERIVED_SHA256="aad5272deacd8cbfd3883e722c87a549794ddc0a86ddadaa33852955cb5db3ef"
-const EXPECTED_HDR_DERIVED_SHA256="e5e30e00773fb030e34b6722b4593290322749ab07f2bad96d1132bb64aaf5fa"
-const EXPECTED_PARTICLE_MATERIAL_STATE_SHA256 = "65510289b8254192ecf843283ee18b106a0decef9f0f718b1e54c043cfa9fbdb"
 function resourcePathOffset(bytes: Uint8Array, target: string): number {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   let offset = 12
@@ -38,9 +32,9 @@ function resourcePathOffset(bytes: Uint8Array, target: string): number {
 }
 function collisionBrushRecords(bytes:Uint8Array):ReadonlyMap<bigint,Readonly<{enabled:boolean;contents:number;model:number|null}>>{
   const view=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength)
-  require(new TextDecoder().decode(bytes.subarray(0,4))==="CSNP"&&view.getUint32(4,true)===3,"Collision snapshot schema differs")
+  require(new TextDecoder().decode(bytes.subarray(0,4))==="CSNP"&&view.getUint32(4,true)===4,"Collision snapshot schema differs")
   let at=52;const output=new Map<bigint,Readonly<{enabled:boolean;contents:number;model:number|null}>>()
-  for(let count=view.getUint32(48,true);count>0;count--){const identity=view.getBigUint64(at,true),enabled=(bytes[at+9]!&1)===1,contents=view.getUint32(at+16,true),shape=bytes[at+68]!,model=shape===0?Number(view.getBigUint64(at+69,true)):null;output.set(identity,Object.freeze({enabled,contents,model}));at+=shape===0?77:shape===1||shape===2?93:81}
+  for(let count=view.getUint32(48,true);count>0;count--){const identity=view.getBigUint64(at,true),enabled=(bytes[at+9]!&1)===1,contents=view.getUint32(at+16,true),shape=bytes[at+68]!,model=shape===0?Number(view.getBigUint64(at+69,true)):null;require(shape<=4,"Unknown collision shape");output.set(identity,Object.freeze({enabled,contents,model}));at+=shape===0?77:shape===1||shape===2?93:shape===3?81:89}
   require(at===bytes.length,"Collision snapshot records are truncated")
   return output
 }
@@ -353,6 +347,8 @@ async function buildNativeHdr(
   bytes: number
   sha256: string
   derivedSha256: string
+  particleMaterialExpectations: readonly ParticleMaterialExpectation[]
+  ldr?: Readonly<{ bytes: number; sha256: string; derivedSha256: string }>
 }> {
   const executable = process.platform === "win32" ? "cargo.exe" : "cargo"
   const cargo = path.join(config.sourceCacheDir, "toolchains", "rust", "cargo", "bin", executable)
@@ -391,13 +387,17 @@ async function buildNativeHdr(
     bytes: report.nativeHdrBytes as number,
     sha256: report.nativeHdrSha256,
     derivedSha256: report.nativeHdrDerivedSha256,
+    particleMaterialExpectations: report.particleMaterialExpectations as readonly ParticleMaterialExpectation[],
+    ldr: report.nativeLdr as Readonly<{ bytes: number; sha256: string; derivedSha256: string }> | undefined,
   }
 }
 
 export async function verifyTf2Wasm(
   config: LocalConfig,
   identity: string | undefined,
+  scope: "complete" | "particle-materials" = "complete",
 ): Promise<Record<string, number | string>> {
+  require(scope === "complete" || identity === "jump_beef", "Particle-only verification requires the configured jump_beef target")
   const map = await acquireMap(config, identity)
   const wasmPath = await buildTf2Wasm(config, false)
   const sourceBundle = await buildSourceBundle(config, identity ?? "")
@@ -630,47 +630,21 @@ export async function verifyTf2Wasm(
   const presentation = new Uint8Array(exports.memory.buffer, presentationPointer, presentationBytes).slice()
   exports.playsrc_free(presentationPointer, presentationBytes)
   const presentationArtifacts = await parsePresentationArtifacts(presentation, parseResourceSet(dependencyBytes))
-  const particleMaterialIdentities = [
-    "effects/brightglow_y_nomodel.vmt",
-    "effects/circle2.vmt",
-    "effects/circle3.vmt",
-    "effects/circle4.vmt",
-    "effects/debris/debris_chunk.vmt",
-    "effects/rocketrailsmoke.vmt",
-    "effects/sc_brightglow_y_nomodel.vmt",
-    "effects/sc_softglow.vmt",
-    "effects/smokelit2/smoke2lit.vmt",
-    "effects/softglow.vmt",
-    "effects/softglow_translucent.vmt",
-    "effects/starflash01.vmt",
-    "effects/wispy_smoke.vmt",
-    "particle/smoke1/smoke1.vmt",
-  ] as const
-  const suppliedParticleMaterials = [...presentationArtifacts.particleMaterials].sort()
-  require(particleMaterialIdentities.every((identity) => suppliedParticleMaterials.includes(identity))
-    && new Set(suppliedParticleMaterials).size === suppliedParticleMaterials.length
-    && presentationArtifacts.particleTextures.length === suppliedParticleMaterials.length
-    && presentationArtifacts.particleTextures.every((texture) => suppliedParticleMaterials.includes(texture.material)),
-  `TF2 Particle material/texture identities differ: ${JSON.stringify(suppliedParticleMaterials)}`)
+  require(Array.isArray(nativeHdr.particleMaterialExpectations), "Configured particle source expectations are missing")
+  verifyParticleMaterials(nativeHdr.particleMaterialExpectations, presentationArtifacts, parseResourceSet(dependencyBytes))
+  const particleMaterialIdentities = nativeHdr.particleMaterialExpectations.map(row => row.identity).sort()
   const particleMaterialStates = particleMaterialIdentities.map((identity) => {
     const state = presentationArtifacts.materialStates.get(identity)
     require(state !== undefined, `TF2 Particle material state ${identity} is missing`)
     return Object.freeze({ identity, state })
   })
-  const spriteCards = new Set([
-    "effects/circle3.vmt", "effects/circle4.vmt", "effects/debris/debris_chunk.vmt",
-    "effects/rocketrailsmoke.vmt", "effects/sc_brightglow_y_nomodel.vmt", "effects/sc_softglow.vmt",
-    "effects/smokelit2/smoke2lit.vmt", "particle/smoke1/smoke1.vmt",
-  ])
-  require(particleMaterialStates.filter(({ identity }) => spriteCards.has(identity)).every(({ state }) =>
-    state.alphaTest && Math.abs(state.alphaTestReference - 0.01) < 1e-6 && state.cull === 1
-    && state.depthTest && !state.depthWrite && state.fragmentDiscard.kind === "alpha"
-    && state.fragmentDiscard.source === "shader-output" && state.fragmentDiscard.pass === "greater"),
-  "TF2 SpriteCard material state differs")
   const particleMaterialStateSha256 = new Bun.CryptoHasher("sha256")
     .update(new TextEncoder().encode(JSON.stringify(particleMaterialStates))).digest("hex")
-  require(particleMaterialStateSha256 === EXPECTED_PARTICLE_MATERIAL_STATE_SHA256,
-    "TF2 Particle material-state hash differs")
+  if (scope === "particle-materials") {
+    require(exports.playsrc_dispose(handle) === 1, "particle verification handle disposal failed")
+    return { target: identity!, scope, particleMaterials: particleMaterialIdentities.length, particleMaterialStateSha256,
+      sourceGraphSha256: sourceBundle.report.graphDescriptor.sha256 }
+  }
   require(presentationArtifacts.environment.markRecords.length === 39 &&
     presentationArtifacts.environment.waterVolumeFacts.length === 1 &&
     presentationArtifacts.environment.waterMaterials.size === 2,
@@ -700,7 +674,7 @@ export async function verifyTf2Wasm(
       (value, index) => value === [-1, 180, 0][index],
     ), "TF2 spawn descriptor differs from the selected teamspawn")
   const mapBytes = exports.playsrc_result_length(handle)
-  require(mapBytes === EXPECTED_MAP_BYTES, `map payload length ${mapBytes} != ${EXPECTED_MAP_BYTES}`)
+  require(nativeHdr.ldr !== undefined && mapBytes === nativeHdr.ldr.bytes, "native/WASM LDR payload length differs")
   const hashPointer = exports.playsrc_alloc(32)
   require(exports.playsrc_result_hash(handle, hashPointer) === 1, "map payload hash is unavailable")
   const declaredMapSha256 = hex(new Uint8Array(exports.memory.buffer, hashPointer, 32))
@@ -715,7 +689,21 @@ export async function verifyTf2Wasm(
   const mapSha256 = hasher.digest("hex")
   exports.playsrc_free(mapPointer, mapBytes)
   require(declaredMapSha256 === mapSha256, "declared map payload hash does not match its bytes")
-  require(mapSha256 === EXPECTED_MAP_SHA256, `map payload SHA-256 ${mapSha256} != ${EXPECTED_MAP_SHA256}`)
+  if (mapSha256 !== nativeHdr.ldr!.sha256) {
+    const native = await readFile(path.join(config.sourceCacheDir, "browser-bundles", `${identity}.native-ldr.psmp`))
+    const first = mapPayload.findIndex((value, index) => value !== native[index])
+    const map = parseRuntimeMap(mapPayload)
+    let location = "outside model float arrays"
+    for (const model of map.models) for (const [primitiveIndex, primitive] of model.primitives.entries()) {
+      for (const [field, components] of [["positions", 3], ["normals", 3], ["bindPositions", 3], ["bindNormals", 3], ["bindTangents", 4], ["boneWeights", 4], ["uv", 2]] as const) {
+        const values = primitive[field], start = values.byteOffset - mapPayload.byteOffset
+        if (values.buffer !== mapPayload.buffer || first < start || first >= start + values.byteLength) continue
+        const scalar = Math.floor((first - start) / 4)
+        location = `${model.logicalPath} primitive=${primitiveIndex} field=${field} vertex=${Math.floor(scalar / components)} component=${scalar % components}`
+      }
+    }
+    require(false, `native/WASM LDR payload differs at ${first} (${location}): native=${hex(native.subarray(Math.max(0, first - 8), first + 24))} wasm=${hex(mapPayload.subarray(Math.max(0, first - 8), first + 24))}`)
+  }
   const renderMap = parseRuntimeMap(mapPayload)
   require(renderMap.materials.length === 14, "runtime map material count is invalid")
   require(renderMap.drawableSurfaces === 2_761, "runtime map drawable world-surface count is invalid")
@@ -1054,10 +1042,10 @@ export async function verifyTf2Wasm(
   require(hdrFirst.sha256 === hdrSecond.sha256, "repeated HDR payload hashes differ")
   require(hdrFirst.derivedSha256 === hdrSecond.derivedSha256, "repeated HDR derived hashes differ")
   require(hdrFirst.derivedSha256 !== ldrDerivedSha256, "LDR and HDR derived identities are equal")
-  require(ldrDerivedSha256 === EXPECTED_LDR_DERIVED_SHA256, `LDR derived identity ${ldrDerivedSha256} changed for payload ${mapSha256}`)
-  require(hdrFirst.payload.byteLength === EXPECTED_HDR_BYTES, `HDR payload byte length changed to ${hdrFirst.payload.byteLength}`)
-  require(hdrFirst.sha256 === EXPECTED_HDR_SHA256, `HDR payload SHA-256 changed to ${hdrFirst.sha256}`)
-  require(hdrFirst.derivedSha256 === EXPECTED_HDR_DERIVED_SHA256, `HDR derived identity changed: ${hdrFirst.derivedSha256}`)
+  require(ldrDerivedSha256 === nativeHdr.ldr!.derivedSha256, "native/WASM LDR derived identity differs")
+  require(hdrFirst.payload.byteLength === nativeHdr.bytes, "native/WASM HDR payload length differs")
+  require(hdrFirst.sha256 === nativeHdr.sha256, "native/WASM HDR payload SHA-256 differs")
+  require(hdrFirst.derivedSha256 === nativeHdr.derivedSha256, "native/WASM HDR derived identity differs")
   require(nativeHdr.bytes === hdrFirst.payload.byteLength &&
     nativeHdr.sha256 === hdrFirst.sha256 &&
     nativeHdr.derivedSha256 === hdrFirst.derivedSha256 &&

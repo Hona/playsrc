@@ -19,6 +19,14 @@ Before a public checkpoint introduces copied or adapted Source 1 SDK code, that 
 
 Independently authored code informed only by public contracts, documented formats, or observed behavior remains under the MIT License unless its file states another license.
 
+The world construction and collision-policy portions of `games/tf2/rust/src/rigid_world.rs` and `games/tf2/rust/src/rigid_world/policy.rs`, projectile orchestration in `games/tf2/rust/src/rigid_projectiles.rs`, the `source_transform_components` extraction in `packages/formats/studio-model/rust/src/presentation.rs`, and the `clear_velocity_and_contact_strain` orchestration in `packages/runtime/physics/rust/src/world/contacts.rs`, adapt official Source SDK 2013 code. Their applicable terms and notices are retained in [`LICENSE.source-sdk-2013`](LICENSE.source-sdk-2013) and [`thirdpartylegalnotices.txt`](thirdpartylegalnotices.txt).
+
+The reload-frame orchestration in `games/tf2/rust/src/weapon.rs` also adapts the official Source SDK 2013 weapon frame and reload-mode paths under the same SDK terms above.
+
+The Demoman pipe-count and launcher-charge HUD orchestration in `games/tf2/browser/src/hud-integration/runtime.ts` and charge-progress computation in `games/tf2/rust/src/weapon.rs` adapt the official Source SDK 2013 under the same SDK terms above.
+
+The Stickybomb Launcher charge sound and pullback activity lifecycle in `games/tf2/rust/src/lib.rs` and `games/tf2/rust/src/weapon.rs` also adapt the official Source SDK 2013 under the same SDK terms above.
+
 ## Trademarks And Affiliation
 
 Source, Team Fortress 2, Counter-Strike, Steam, Valve, and their logos and trademarks belong to Valve Corporation or their respective owners.

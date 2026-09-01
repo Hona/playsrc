@@ -59,16 +59,18 @@ describe("bounded headed profile orchestration", () => {
   })
 
   test("the supported Node runner can load the actual scenario without opening a browser", async () => {
+    await Promise.all(["upward-training-bots", "demoman", "demoman-physics", "demoman-grenade"].map(async scenario => {
     const child = Bun.spawn([profileNodeExecutable(), path.join(repositoryRoot, "node_modules/@playwright/test/cli.js"), "test", "--config=playwright.profile.config.ts", "--list"], {
       cwd: repositoryRoot,
-      env: { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("PROFILE_") && !name.startsWith("PLAYSRC_PROFILE_"))), PROFILE_SCENARIOS: "upward-training-bots" },
-      stdout: "pipe", stderr: "pipe",
+      env: { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("PROFILE_") && !name.startsWith("PLAYSRC_PROFILE_"))), PROFILE_SCENARIOS: scenario },
+      stdout: "pipe", stderr: "pipe", timeout: 15_000,
     })
     const [output, errors, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
     expect(errors).toBe("")
     expect(code).toBe(0)
-    expect(output).toContain("upward-training-bots.profile.ts")
-  })
+    expect(output).toContain(`${scenario === "demoman" ? "demoman-bottle" : scenario}.profile.ts`)
+    }))
+  }, 20_000)
 
   test("profiles the exact production origin without starting or substituting a development server", () => {
     const previous = process.env.PLAYSRC_PROFILE_ORIGIN
@@ -95,6 +97,8 @@ describe("bounded headed profile orchestration", () => {
     expect(headedProfileTarget({ PROFILE_MEDIC_WEAPONS: "1" })).toBe("pl_upward")
     expect(headedProfileTarget({ PROFILE_SKY_COHERENCE: "1" })).toBe("pl_upward")
     expect(headedProfileTarget({ PROFILE_SCENARIOS: "demoman" })).toBe("pl_upward")
+    expect(headedProfileTarget({ PROFILE_SCENARIOS: "demoman-physics" })).toBe("jump_beef")
+    expect(headedProfileTarget({ PROFILE_SCENARIOS: "demoman-grenade" })).toBe("jump_beef")
     expect(headedProfileTarget({ PROFILE_SCENARIOS: "upward-training-bots" })).toBe("pl_upward")
     expect(headedProfileTarget({}, "pl_upward")).toBe("pl_upward")
   })
@@ -359,7 +363,8 @@ describe("bounded headed profile orchestration", () => {
       expect(child.exitCode).toBeNull()
       matches = true
       await stopOwner(filename, metadata, 2_000)
-      expect(await child.exited).toBe(0)
+      // Windows termination does not deliver the child's POSIX signal handler.
+      expect(await child.exited).toBe(process.platform === "win32" ? 1 : 0)
     } finally { await releaseHeadedProfileLock(lockPath, lock.token); server.stop(true); child.kill(); await child.exited }
   })
 
@@ -375,6 +380,16 @@ describe("bounded headed profile orchestration", () => {
   test("defers an exhausted queue/build budget before launching an incomplete sample", () => {
     expect(() => requireBrowserBudget(16_000)).toThrow(ProfileCapacityDeferred)
     expect(() => requireBrowserBudget(30_000)).not.toThrow()
+  })
+
+  test("Demoman physics admission reserves the complete declared scenario instead of a partial startup", () => {
+    for (const profile of ["demoman-physics", "demoman-prop-contact", "demoman-grenade"]) {
+      const minimum = profileMinimumRemainingMilliseconds(profile, {})
+      expect(minimum).toBe(150_000)
+      expect(() => requireBrowserBudget(42_374, minimum)).toThrow(ProfileCapacityDeferred)
+      expect(() => requireBrowserBudget(minimum - 1, minimum)).toThrow(ProfileCapacityDeferred)
+      expect(() => requireBrowserBudget(minimum, minimum)).not.toThrow()
+    }
   })
 
   test("measured cosmetic acceptance cannot enter on the shorter tooltip-only budget", () => {

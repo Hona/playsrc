@@ -22,7 +22,7 @@ export type Tf2BuildingRequest = Readonly<
   | { action: "hurt"; amount: number }
 >
 export type MovementMode = 0 | 1
-export type ProjectileKind = 1 | 2 | 3 | 4
+export type ProjectileKind = 1 | 2 | 3 | 4 | 5
 export type ProjectileTrail = 0 | 1 | 2 | 3 | 4 | 5 | 6
 export type ProjectileState = 1 | 2 | 3
 export type ContactKind = 1 | 2 | 3
@@ -43,16 +43,6 @@ export type BotRequest = Readonly<
   | { action: "kick-team"; team: Tf2Team }
 >
 
-export type ProjectilePhysicsResult = Readonly<{
-  projectile: number
-  tick: bigint
-  position: readonly [number, number, number]
-  velocity: readonly [number, number, number]
-  orientation: readonly [number, number, number, number]
-  angularVelocity: readonly [number, number, number]
-  motionEnabled: boolean
-  contact: null | Readonly<{ kind: ContactKind; normal: readonly [number, number, number] }>
-}>
 export type RandomStreamState = Readonly<{
   current: number
   shuffled: number
@@ -99,21 +89,22 @@ function isSoundDefinition(value: number | undefined): value is number {
 
 export type RandomDraw = Readonly<{
   context: 1 | 2
-  decision: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 64 | 65
+  decision: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 64 | 65 | 66
   definition: number
   phase: 0 | 1 | 2
   raw: number
   result: Readonly<{ kind: "float-bits"; bits: number } | { kind: "integer"; value: number } | { kind: "rejected-integer" }>
 }>
 export type AudioEvent = Readonly<{
+  volumeOverride?: number
   pitchOverride?: number
   action: "play" | "stop" | "fade-in" | "fade-out"
   fadeSeconds: number
   tick: bigint
   ordinal: number
-  identity: 1 | 2 | 3 | 4 | 5
+  identity: 1 | 2 | 3 | 4 | 5 | 6
   definition: number
-  sourceKind: 1 | 2 | 3 | 4
+  sourceKind: 1 | 2 | 3 | 4 | 5
   sourceIdentity: number
   ownerIdentity: number | null
   position: readonly [number, number, number]
@@ -166,7 +157,6 @@ export type Command = Readonly<{
   disguise?: Readonly<{ class: Tf2Class; team: Tf2Team }>
   modeRequest?: MovementMode
   activateEntity?: number
-  physicsResults?: readonly ProjectilePhysicsResult[]
   bot?: BotRequest
   building?: Tf2BuildingRequest
   botConfiguration?: BotConfiguration
@@ -247,6 +237,7 @@ export type WeaponState = Readonly<{
   firstPrimaryTick: bigint
   chargedDamage: number
   prefirePlaybackRate: number | null
+  chargeProgress: number | null
 }>
 
 export type FlamePoint = Readonly<{
@@ -267,23 +258,9 @@ export type ShotgunPellet = Readonly<{
   damage: number
   range: number
 }>
-export type WeaponActivity = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11
+export type WeaponActivity = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14
 export type ActivityEvent = Readonly<{ tick: bigint; weapon: Tf2Weapon; activity: WeaponActivity }>
 export type LifecycleEvent = Readonly<{ tick: bigint; kind: 1 | 2 | 3 | 4; class: Tf2Class; team: Tf2Team }>
-export type ProjectilePhysicsRequest = Readonly<{
-  operation: 1 | 2 | 3 | 4
-  projectile: number
-  tick: bigint
-  position: readonly [number, number, number]
-  velocity: readonly [number, number, number]
-  orientation: readonly [number, number, number, number]
-  angularVelocity: readonly [number, number, number]
-  hullMins: readonly [number, number, number]
-  hullMaxs: readonly [number, number, number]
-  gravityScale: number
-  friction: number
-  elasticity: number
-}>
 export type RocketTraceRequest = Readonly<{
   projectile: number
   tick: bigint
@@ -725,6 +702,8 @@ export type SoundscapeSelection = Readonly<{
 }>
 
 export type Snapshot = Readonly<{
+  pipebombCount: number
+  chargeProgress: number | null
   decapitations: number
   revengeCrits: number
   weaponCrosshairScale: number
@@ -767,7 +746,6 @@ export type Snapshot = Readonly<{
   combatDecals: readonly CombatDecal[]
   activities: readonly ActivityEvent[]
   lifecycleEvents: readonly LifecycleEvent[]
-  physicsRequests: readonly ProjectilePhysicsRequest[]
   rocketTraceRequests: readonly RocketTraceRequest[]
   radiusDamageRequests: readonly RadiusDamageRequest[]
   moverRequests: readonly MoverRequest[]
@@ -887,24 +865,12 @@ export function encodeCommand(command: Command): ArrayBuffer {
   if (command.activateEntity !== undefined && !canonicalIdentity(command.activateEntity)) {
     throw new Tf2CodecError("command entity identity is invalid")
   }
-  const physics = command.physicsResults ?? []
-  if (physics.length > 64) {
-    throw new Tf2CodecError("command external-result count exceeds its bound")
-  }
-  const uint64 = (value: bigint): boolean => value >= 0n && value <= 0xffff_ffff_ffff_ffffn
-  for (const result of physics) {
-    if (!canonicalIdentity(result.projectile) || !uint64(result.tick) ||
-      !finite([...result.position, ...result.velocity, ...result.angularVelocity]) || !normalized(result.orientation) ||
-      (result.contact !== null && (!([1, 2, 3] as number[]).includes(result.contact.kind) || !normalized(result.contact.normal)))) {
-      throw new Tf2CodecError("command projectile Physics result is invalid")
-    }
-  }
-  const length = 84 + physics.length * 80
+  const length = 84
   const bytes = new ArrayBuffer(length)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x43, 0x4d, 0x44])
-  view.setUint32(4, 9, true)
+  view.setUint32(4, 10, true)
   scalars.forEach((value, index) => view.setFloat32(8 + index * 4, value, true))
   let buildingFlags = 0
   if (command.building) {
@@ -941,7 +907,6 @@ export function encodeCommand(command: Command): ArrayBuffer {
     true,
   )
   view.setUint32(36, command.activateEntity ?? 0xffff_ffff, true)
-  view.setUint16(40, physics.length, true)
   let packedBot = 0
   if (command.bot) {
     if (command.bot.action === "add") {
@@ -1003,24 +968,6 @@ export function encodeCommand(command: Command): ArrayBuffer {
       values.forEach((value, index) => view.setFloat32(64 + index * 4, value, true))
     }
   }
-  let at = 84
-  const writeVector = (value: readonly number[]): void => {
-    value.forEach((scalar, index) => view.setFloat32(at + index * 4, scalar, true))
-    at += value.length * 4
-  }
-  for (const result of physics) {
-    view.setUint32(at, result.projectile, true)
-    view.setBigUint64(at + 4, result.tick, true)
-    data[at + 12] = Number(result.motionEnabled)
-    data[at + 13] = result.contact?.kind ?? 0
-    at += 16
-    writeVector(result.position)
-    writeVector(result.velocity)
-    writeVector(result.orientation)
-    writeVector(result.angularVelocity)
-    writeVector(result.contact?.normal ?? [0, 0, 0])
-  }
-  if (at !== length) throw new Tf2CodecError("command encoding length differs")
   return bytes
 }
 
@@ -1576,7 +1523,7 @@ function validateProjectileTransitions(events: readonly ProjectileEvent[]): void
     if (event.type === "fire" && current.last !== undefined) {
       throw new Tf2CodecError("projectile fire event is duplicated")
     }
-    if (event.type === "impact" && current.last === "impact" && event.kind !== 2 && event.weapon !== 97) {
+    if (event.type === "impact" && current.last === "impact" && event.kind !== 2 && event.kind !== 5 && event.weapon !== 97) {
       throw new Tf2CodecError("projectile impact event is duplicated")
     }
     if (event.type === "stick" && (event.kind !== 2 || current.last !== "impact")) {
@@ -1636,7 +1583,7 @@ function decodeRandomState(bytes: ArrayBuffer, offset: number, length: number): 
 function decodeCollisionSnapshot(bytes: ArrayBuffer, offset: number, length: number): CollisionSnapshot {
   if (length < 52 || length > 16 * 1024 * 1024) throw new Tf2CodecError("Collision snapshot length is invalid")
   const data = new Uint8Array(bytes, offset, length), view = new DataView(bytes, offset, length)
-  if (new TextDecoder().decode(data.subarray(0, 4)) !== "CSNP" || view.getUint32(4, true) !== 3) {
+  if (new TextDecoder().decode(data.subarray(0, 4)) !== "CSNP" || view.getUint32(4, true) !== 4) {
     throw new Tf2CodecError("Collision snapshot identity is invalid")
   }
   const worldIdentity = Array.from(data.subarray(8, 40), (value) => value.toString(16).padStart(2, "0")).join("")
@@ -1652,7 +1599,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
   const buffer = data.buffer as ArrayBuffer
   const base = data.byteOffset
   const view = new DataView(buffer, base, data.byteLength)
-  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 31)
+  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 33)
     throw new Tf2CodecError("snapshot identity is invalid")
   const tf2Class = data[16]
   const team = data[17]
@@ -1687,7 +1634,8 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
   const movementLength = view.getUint32(84, true)
   const activityCount = count(view.getUint32(88, true), "activity")
   const lifecycleEventCount = count(view.getUint32(92, true), "lifecycle event")
-  const physicsRequestCount = count(view.getUint32(96, true), "Physics request")
+  const pipebombCount = view.getUint32(96, true)
+  if (pipebombCount > 31) throw new Tf2CodecError("pipebomb count exceeds its wire range")
   const rocketRequestCount = count(view.getUint32(100, true), "rocket trace request")
   const radiusRequestCount = count(view.getUint32(104, true), "radius damage request")
   const moverRequestCount = count(view.getUint32(108, true), "mover request")
@@ -1738,7 +1686,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
       data[item + 2] !== 0 ||
       data[item + 3] !== 0 ||
       !Number.isFinite(view.getFloat32(item + 44, true)) || view.getFloat32(item + 44, true) < 0
-      || (itemWeapon === 9 ? view.getFloat32(item + 44, true) <= 0 : tf2Class !== 8 && view.getFloat32(item + 44, true) > 150)
+      || (itemWeapon === 9 ? view.getFloat32(item + 44, true) <= 0 : itemWeapon === 3 ? view.getFloat32(item + 44, true) > 1 : tf2Class !== 8 && view.getFloat32(item + 44, true) > 150)
     )
       throw new Tf2CodecError("loadout record is invalid")
     if (tf2Class === 8) {
@@ -1761,8 +1709,9 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
         reloadDueTick: view.getBigUint64(item + 20, true) === 0xffff_ffff_ffff_ffffn ? null : view.getBigUint64(item + 20, true),
         chargeBeginTick: view.getBigUint64(item + 28, true) === 0xffff_ffff_ffff_ffffn ? null : view.getBigUint64(item + 28, true),
         firstPrimaryTick: view.getBigUint64(item + 36, true),
-        chargedDamage: itemWeapon === 9 ? 0 : view.getFloat32(item + 44, true),
+        chargedDamage: itemWeapon === 9 || itemWeapon === 3 ? 0 : view.getFloat32(item + 44, true),
         prefirePlaybackRate: itemWeapon === 9 ? view.getFloat32(item + 44, true) : null,
+        chargeProgress: itemWeapon === 3 ? view.getFloat32(item + 44, true) : null,
       })
     loadout.push(ranges ? ranges.read("loadout", index, item, 48, readWeapon) : readWeapon())
   }
@@ -1839,7 +1788,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     const rawNormal = vector(view, item + 68)
     const ageSeconds = view.getFloat32(item + 80, true)
     if (
-      (kind !== 1 && kind !== 2 && kind !== 3 && kind !== 4) ||
+      (kind !== 1 && kind !== 2 && kind !== 3 && kind !== 4 && kind !== 5) ||
       !isTf2Weapon(weapon) || trail > 6 ||
       (projectileTeam !== 2 && projectileTeam !== 3) ||
       state === undefined ||
@@ -1913,7 +1862,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
       eventCode === undefined ||
       eventCode < 1 ||
       eventCode > 7 || trail > 6 ||
-      (kind !== 1 && kind !== 2 && kind !== 3 && kind !== 4) ||
+      (kind !== 1 && kind !== 2 && kind !== 3 && kind !== 4 && kind !== 5) ||
       !isTf2Weapon(weapon) ||
       (projectileTeam !== 2 && projectileTeam !== 3) ||
       flags === undefined ||
@@ -2063,7 +2012,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     const itemWeapon = data[item + 8]
     const activity = data[item + 9]
 
-    if (itemWeapon === undefined || !isTf2Weapon(itemWeapon) || activity === undefined || activity < 1 || activity > 13 ||
+    if (itemWeapon === undefined || !isTf2Weapon(itemWeapon) || activity === undefined || activity < 1 || activity > 14 ||
 
       !data.subarray(item + 10, item + 16).every((value) => value === 0)) {
       throw new Tf2CodecError("activity record is invalid")
@@ -2094,24 +2043,6 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
   }
   at += lifecycleEventCount * 16
 
-  requireBytes(physicsRequestCount * 104, "Physics request")
-  const physicsRequests: ProjectilePhysicsRequest[] = []
-  for (let index = 0; index < physicsRequestCount; index += 1) {
-    const item = at + index * 104
-    const operation = data[item]
-    const position = vector(view, item + 16), velocity = vector(view, item + 28), orientation = quaternion(view, item + 40),
-      angularVelocity = vector(view, item + 56), hullMins = vector(view, item + 68), hullMaxs = vector(view, item + 80)
-    const gravityScale = view.getFloat32(item + 92, true), friction = view.getFloat32(item + 96, true), elasticity = view.getFloat32(item + 100, true)
-    if (operation === undefined || operation < 1 || operation > 4 || !data.subarray(item + 1, item + 4).every((value) => value === 0) ||
-      !finite([...position, ...velocity, ...angularVelocity, ...hullMins, ...hullMaxs, gravityScale, friction, elasticity]) ||
-      !normalized(orientation) || hullMins.some((value, axis) => value > hullMaxs[axis]!)) {
-      throw new Tf2CodecError("Physics request record is invalid")
-    }
-    physicsRequests.push(Object.freeze({ operation: operation as ProjectilePhysicsRequest["operation"], projectile: view.getUint32(item + 4, true),
-      tick: view.getBigUint64(item + 8, true), position, velocity, orientation, angularVelocity, hullMins, hullMaxs, gravityScale, friction, elasticity }))
-  }
-  at += physicsRequestCount * 104
-
   requireBytes(rocketRequestCount * 44, "rocket trace request")
   const rocketTraceRequests: RocketTraceRequest[] = []
   for (let index = 0; index < rocketRequestCount; index += 1) {
@@ -2126,7 +2057,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
   for (let index = 0; index < radiusRequestCount; index += 1) {
     const item = at + index * 36, kind = data[item + 4], source = vector(view, item + 8)
     const values = [view.getFloat32(item + 20, true), view.getFloat32(item + 24, true), view.getFloat32(item + 28, true)]
-    if ((kind !== 1 && kind !== 2 && kind !== 4) || !data.subarray(item + 5, item + 8).every((value) => value === 0) || !finite([...source, ...values])) {
+    if ((kind !== 1 && kind !== 2 && kind !== 4 && kind !== 5) || !data.subarray(item + 5, item + 8).every((value) => value === 0) || !finite([...source, ...values])) {
       throw new Tf2CodecError("radius damage request record is invalid")
     }
     const directTarget = view.getUint32(item + 32, true)
@@ -2201,7 +2132,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
   requireBytes(blockerCount * 4, "authority blocker")
   const authorityBlockers: AuthorityBlocker[] = []
   const blockerDetails = new Map<number, string>([
-    [1, "TF2 sticky IVP solver unavailable: current body/contact transition"],
+    [1, "The map's complete rigid-body resources have not been admitted"],
     [2, "Tempus core and configured Jump course contract unavailable"],
     [3, "Payload cart visible model requires its authored breakable constraint and VPhysics rigid-body authority"],
   ])
@@ -2215,7 +2146,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     blockerCodes.add(code)
     authorityBlockers.push(Object.freeze({ code: code as 1 | 2 | 3, classification: "Missing", detail }))
   }
-  if ((blockerCodes.size !== 2 && blockerCodes.size !== 3) || !blockerCodes.has(1) || !blockerCodes.has(2)) {
+  if (blockerCodes.size < 1 || blockerCodes.size > 3 || !blockerCodes.has(2)) {
     throw new Tf2CodecError("authority blocker set is incomplete")
   }
   at += blockerCount * 4
@@ -2232,7 +2163,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     const raw = view.getInt32(item + 4, true), resultKind = data[item + 8], resultValue = view.getUint32(item + 12, true)
     const soundDecision = decision !== undefined && decision >= 1 && decision <= 4
     if (
-      (context !== 1 && context !== 2) || decision === undefined || decision < 1 || decision > 14 && decision !== 64 && decision !== 65 ||
+      (context !== 1 && context !== 2) || decision === undefined || decision < 1 || decision > 14 && decision !== 64 && decision !== 65 && decision !== 66 ||
       (soundDecision ? !isSoundDefinition(definition) || (phase !== 1 && phase !== 2) : definition !== 0 || phase !== 0 || context !== 1 && decision !== 14 && decision !== 65) ||
       raw <= 0 || raw >= 2_147_483_647 || resultKind === undefined || resultKind < 1 || resultKind > 3 ||
       data[item + 9] !== 0 || data[item + 10] !== 0 || data[item + 11] !== 0 ||
@@ -2257,20 +2188,22 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     const sourceIdentity = view.getUint32(item + 16, true), rawOwner = view.getUint32(item + 20, true), position = vector(view, item + 24)
     const volume = view.getFloat32(item + 36, true), pitch = view.getFloat32(item + 40, true), soundLevel = view.getFloat32(item + 44, true)
     const action = data[item + 15]!, fadeSeconds = view.getFloat32(item + 48, true)
-    const expectedOrdinal = nextOrdinal.get(tick) ?? 0, waveCount = definition === undefined ? 0 : definition >= 160 ? configuredEquipmentSoundWaves[definition - 160] ?? 0 : nativeEquipmentSoundWaves[definition] ?? 0
+    const expectedOrdinal = nextOrdinal.get(tick) ?? 0, waveCount = definition === undefined ? 0 : nativeEquipmentSoundWaves[definition] ?? configuredEquipmentSoundWaves[definition - 160] ?? 0
     if (
-      (identity === undefined || identity < 1 || identity > 5) || !isSoundDefinition(definition) ||
-      (sourceKind !== 1 && sourceKind !== 2 && sourceKind !== 3 && sourceKind !== 4) || (hasOwner !== 0 && hasOwner !== 1) || action > 4 ||
+      (identity === undefined || identity < 1 || identity > 6) || !isSoundDefinition(definition) ||
+      (sourceKind !== 1 && sourceKind !== 2 && sourceKind !== 3 && sourceKind !== 4 && sourceKind !== 5) || (hasOwner !== 0 && hasOwner !== 1) || action > 5 ||
+      (identity === 6 && (sourceKind !== 2 || sourceIdentity !== 0 || hasOwner !== 0 || action !== 5)) ||
       ordinal !== expectedOrdinal || !canonicalIdentity(sourceIdentity) ||
       (hasOwner === 0 ? rawOwner !== 0xffff_ffff : !canonicalIdentity(rawOwner)) ||
       !finite([...position, volume, pitch, soundLevel]) || [volume, pitch, soundLevel].some((value) => value < 0 || value >= 1) ||
-      wave === undefined || wave >= waveCount || !Number.isFinite(fadeSeconds) || (action === 4 ? fadeSeconds < 1 || fadeSeconds > 255 : action < 2 ? fadeSeconds !== 0 : fadeSeconds <= 0)
+      wave === undefined || wave >= waveCount || !Number.isFinite(fadeSeconds) || (action === 5 ? fadeSeconds < 0 || fadeSeconds > 1 : action === 4 ? fadeSeconds < 1 || fadeSeconds > 255 : action < 2 ? fadeSeconds !== 0 : fadeSeconds <= 0)
     ) throw new Tf2CodecError("audio event record is invalid")
     nextOrdinal.set(tick, expectedOrdinal + 1)
     audioEvents.push(Object.freeze({
       tick, ordinal, identity, definition, sourceKind, sourceIdentity,
-      action: (["play", "stop", "fade-in", "fade-out", "play"] as const)[action]!, fadeSeconds: action === 4 ? 0 : fadeSeconds,
+      action: (["play", "stop", "fade-in", "fade-out", "play", "play"] as const)[action]!, fadeSeconds: action >= 4 ? 0 : fadeSeconds,
       ...(action === 4 ? { pitchOverride: fadeSeconds } : {}),
+      ...(action === 5 ? { volumeOverride: fadeSeconds } : {}),
       ownerIdentity: hasOwner === 1 ? rawOwner : null,
       position,
       samples: Object.freeze({ volume, pitch, wave, soundLevel }),
@@ -2620,6 +2553,8 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     equippedItems,
     decapitations,
     revengeCrits,
+    pipebombCount,
+    chargeProgress: loadout.find(state => state.weapon === weapon)?.chargeProgress ?? null,
     weaponCrosshairScale,
     class: tf2Class as Tf2Class,
     team,
@@ -2658,7 +2593,6 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     combatDecals:Object.freeze(combatDecals),
     activities: Object.freeze(activities),
     lifecycleEvents: Object.freeze(lifecycleEvents),
-    physicsRequests: Object.freeze(physicsRequests),
     rocketTraceRequests: Object.freeze(rocketTraceRequests),
     radiusDamageRequests: Object.freeze(radiusDamageRequests),
     moverRequests: Object.freeze(moverRequests),

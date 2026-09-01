@@ -20,6 +20,8 @@ const systems = new Set([
   "rocketbackblast",
   "stickybombtrail_red",
   "stickybombtrail_blue",
+  "pipebombtrail_red", "pipebombtrail_blue", "critical_pipe_red", "critical_pipe_blue",
+  "critical_grenade_red", "critical_grenade_blue", "muzzle_grenadelauncher",
   "stickybomb_pulse_red",
   "stickybomb_pulse_blue",
   "muzzle_pipelauncher",
@@ -37,6 +39,7 @@ function catalog(suppliedSystems: ReadonlySet<string> = systems): ProjectileReso
     models: new Set([
       "models/weapons/w_models/w_rocket.mdl",
       "models/weapons/w_models/w_stickybomb.mdl",
+      "models/weapons/w_models/w_grenade_grenadelauncher.mdl",
       "models/weapons/w_models/w_rocket_airstrike/w_rocket_airstrike.mdl",
       "models/weapons/w_models/w_flaregun_shell.mdl",
     ]),
@@ -150,6 +153,18 @@ function timeline(...ticks: readonly ProjectileTick[]): ProjectileFrame {
 }
 
 describe("TF2 projectile presentation contract", () => {
+  test("regular pipes and remote stickies use distinct authored models, muzzle effects and critical trails",()=>{
+    for(const team of ["red","blue"] as const)for(const kind of ["sticky","grenade"] as const){
+      const fact:ProjectileFact={...sticky("flying",team),kind,weapon:kind==="sticky"?3:18,critical:true}
+      const mapper=createProjectilePresentationMapper(catalog())
+      const result=mapper.map(frame(1n,[fact],[event(fact,"fire",1n)]))
+      expect(result.models[0]?.model).toBe(kind==="sticky"?"models/weapons/w_models/w_stickybomb.mdl":"models/weapons/w_models/w_grenade_grenadelauncher.mdl")
+      expect(result.models[0]?.skin).toBe(team==="red"?0:1)
+      expect(result.particles.filter(value=>value.kind==="start").map(value=>value.system)).toEqual(kind==="sticky"
+        ?[`stickybombtrail_${team}`,`critical_grenade_${team}`,"muzzle_pipelauncher"]
+        :[`pipebombtrail_${team}`,`critical_pipe_${team}`,"muzzle_grenadelauncher"])
+    }
+  })
   test("uses native visibility and mini model with both Air Strike jumping trails and critical overlay", () => {
     const mapper = createProjectilePresentationMapper(catalog())
     const fact = rocket({ weapon: 94, miniRocket: true, trail: 3, critical: true, modelVisible: false })

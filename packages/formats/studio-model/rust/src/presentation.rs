@@ -13,7 +13,7 @@ use crate::{
 };
 
 const ARTIFACT_MAGIC: &[u8; 4] = b"PSMP";
-const ARTIFACT_VERSION: u16 = 3;
+const ARTIFACT_VERSION: u16 = 4;
 const COMPACT_FRAME_MARKER: u32 = u32::MAX;
 const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 const STUDIO_LOOPING: i32 = 0x0001;
@@ -399,6 +399,7 @@ pub struct PresentationModel {
     pub checksum: i32,
     pub flags: i32,
     pub basis: ModelBasis,
+    pub collision_bounds: [Vector3; 2],
     pub dependencies: Vec<ArtifactDependency>,
     pub base_material_count: usize,
     pub materials: Vec<PresentationMaterial>,
@@ -790,6 +791,7 @@ pub fn build_presentation_model(
         checksum: document.checksum,
         flags: document.flags,
         basis: ModelBasis::source(),
+        collision_bounds: [document.bounds.hull_min, document.bounds.hull_max],
         dependencies,
         base_material_count: document.materials.len(),
         materials,
@@ -1715,6 +1717,19 @@ pub fn reflect_viewmodel_handedness(view_to_world: Matrix3x4, transform: Matrix3
         view_space.0[index] = Float32((-f32::from_bits(view_space.0[index].0)).to_bits());
     }
     multiply_matrix(&view_to_world, &view_space)
+}
+
+/// Source MatrixAngles extraction for an authored bone-to-world transform.
+// Adapted from Valve's Source SDK 2013. Copyright Valve Corporation, All rights reserved.
+// See LICENSE.source-sdk-2013 and thirdpartylegalnotices.txt at the repository root.
+pub fn source_transform_components(matrix:Matrix3x4)->Result<(Vector3,Vector3),PresentationError> {
+    let values=matrix.0.map(|value|f32::from_bits(value.0));
+    if values.iter().any(|value|!value.is_finite()) {return Err(presentation_error(PresentationErrorCode::InvalidState,"source-transform-components"));}
+    let horizontal=(values[0]*values[0]+values[4]*values[4]).sqrt();
+    let pitch=(-values[8]).atan2(horizontal).to_degrees();
+    let (yaw,roll)=if horizontal>0.001 {(values[4].atan2(values[0]).to_degrees(),values[9].atan2(values[10]).to_degrees())}else{((-values[1]).atan2(values[5]).to_degrees(),0.0)};
+    let vector=|value:[f32;3]|Vector3(value.map(|value|Float32(value.to_bits())));
+    Ok((vector([values[3],values[7],values[11]]),vector([pitch,yaw,roll])))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3172,6 +3187,7 @@ fn encode_model(
     output.vector(model.basis.forward)?;
     output.vector(model.basis.left)?;
     output.vector(model.basis.up)?;
+    for bounds in model.collision_bounds { output.vector(bounds)?; }
     match model.descriptor {
         PresentationDescriptor::World {
             geometry,
@@ -3866,6 +3882,7 @@ pub fn decode_presentation(
         left: input.vector()?,
         up: input.vector()?,
     };
+    let collision_bounds = [input.vector()?, input.vector()?];
     let geometry =
         |input: &mut ArtifactReader<'_>| -> Result<GeometryOrientation, PresentationError> {
             if input.u8()? != 0
@@ -4418,6 +4435,7 @@ pub fn decode_presentation(
         checksum,
         flags,
         basis,
+        collision_bounds,
         dependencies,
         base_material_count,
         materials,
@@ -5378,7 +5396,10 @@ mod tests {
     }
 
     fn build_profile(profile: PresentationProfile) -> PresentationArtifact {
-        let document = document();
+        build_document(profile, document())
+    }
+
+    fn build_document(profile: PresentationProfile, document: Document) -> PresentationArtifact {
         let PresentationBuild::Needs(candidates) = build_presentation(
             &document,
             profile,
@@ -5461,6 +5482,26 @@ mod tests {
     }
 
     #[test]
+    fn collision_bounds_preserve_authored_header_bits_in_both_profiles() {
+        for profile in [PresentationProfile::World, PresentationProfile::ViewModel] {
+            for bounds in [
+                [vector([-13.25, -0.0, -0.03125]), vector([42.5, 0.0, 73.0])],
+                [vector([0.0; 3]); 2],
+            ] {
+                let mut source = document();
+                source.bounds.hull_min = bounds[0];
+                source.bounds.hull_max = bounds[1];
+                let artifact = build_document(profile, source);
+                assert_eq!(artifact.model.collision_bounds, bounds);
+                assert_eq!(decode_presentation(&artifact.bytes, PresentationLimits::default()).unwrap().model.collision_bounds, bounds);
+                let mut old_version = artifact.bytes;
+                old_version[4..6].copy_from_slice(&3_u16.to_le_bytes());
+                assert!(decode_presentation(&old_version, PresentationLimits::default()).is_err());
+            }
+        }
+    }
+
+    #[test]
     fn emits_exact_material_closure_and_round_trips_byte_identical_artifacts() {
         let first = build();
         let second = build();
@@ -5468,9 +5509,9 @@ mod tests {
         assert_eq!(first.sha256, second.sha256);
         assert_eq!(
             first.sha256,
-            hex_hash("08bcffc85424c7e2c89efdc20cdfc7b9e8b6bdf3ef8e26b253f22799dac0f4b9")
+            hex_hash("dd3035ca25c79675be0e0ef1de44416a6e55b35c633291b987c09fc7b90eae76")
         );
-        assert_eq!(first.bytes.len(), 3_592);
+        assert_eq!(first.bytes.len(), 3_616);
         assert!(first.bytes.len() < MAX_MESSAGE_BYTES);
         assert_eq!(first.model.dependencies.len(), 4);
         assert_eq!(

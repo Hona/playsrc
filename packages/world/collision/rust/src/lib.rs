@@ -2,11 +2,13 @@ use playsrc_bsp::{
     Brush as BspBrush, BrushSide as BspSide, Bsp, Leaf, LumpData, Model, Node, Plane as BspPlane,
 };
 use sha2::{Digest, Sha256};
-use std::{fmt, ops::Range};
+use std::{fmt, ops::Range, sync::Arc};
 
 mod brush_visits;
+mod bounds;
 mod contact;
 mod displacement;
+mod entity_queries;
 mod hitbox;
 mod lighting;
 #[cfg(feature = "replay-reference")]
@@ -14,6 +16,8 @@ pub mod replay_diagnostics;
 mod snapshot;
 
 use brush_visits::BrushVisits;
+pub use bounds::{BoundsTrace,trace_bounds};
+pub use entity_queries::EntityQuerySpace;
 
 pub use contact::{
     CONTACT_SNAPSHOT_VERSION, ContactEdge, ContactEdgeKind, ContactFrame, ContactLimits,
@@ -29,10 +33,12 @@ pub use lighting::{
 };
 
 pub use snapshot::{
-    Candidate, ConvexInput, ObjectInput, ObjectOverlapRequest, ObjectRole, ObjectTraceRequest,
-    PhysicsShape, PointContentsContributor, PointContentsResult, QueryScratch, SNAPSHOT_VERSION,
-    Snapshot, SnapshotLimits, SnapshotRayRequest, SnapshotRecord, SnapshotShape,
-    SnapshotTraceRequest, TraceScope, Transform,
+    PhysicsQuery,
+    AuthoredConvex, AuthoredEnclosure, AuthoredHierarchy, AuthoredHierarchyNode, AuthoredHullRef,
+    AuthoredShapeProperties, AuthoredTriangle, Candidate, ConvexInput, ObjectInput,
+    ObjectOverlapRequest, ObjectRole, ObjectTraceRequest, PhysicsShape, PointContentsContributor,
+    PointContentsResult, QueryScratch, SNAPSHOT_VERSION, Snapshot, SnapshotLimits,
+    SnapshotRayRequest, SnapshotRecord, SnapshotShape, SnapshotTraceRequest, TraceScope, Transform,
 };
 
 pub const CONTENTS_SOLID: u32 = 0x0000_0001;
@@ -45,11 +51,14 @@ pub const MASK_CURRENT: u32 = 0x00fc_0000;
 pub const CONTENTS_MOVEABLE: u32 = 0x0000_4000;
 pub const CONTENTS_PLAYERCLIP: u32 = 0x0001_0000;
 pub const CONTENTS_MONSTER: u32 = 0x0200_0000;
+pub const CONTENTS_DEBRIS: u32 = 0x0400_0000;
 pub const CONTENTS_TRANSLUCENT: u32 = 0x1000_0000;
 pub const CONTENTS_HITBOX: u32 = 0x4000_0000;
 pub const MASK_SOLID: u32 =
     CONTENTS_SOLID | CONTENTS_MOVEABLE | CONTENTS_WINDOW | CONTENTS_MONSTER | CONTENTS_GRATE;
 pub const MASK_PLAYERSOLID: u32 = MASK_SOLID | CONTENTS_PLAYERCLIP;
+pub const MASK_SHOT_HULL:u32 = MASK_SOLID | CONTENTS_DEBRIS;
+pub const MASK_WATER: u32 = CONTENTS_WATER | CONTENTS_MOVEABLE | CONTENTS_SLIME;
 pub const MASK_OPAQUE: u32 = CONTENTS_SOLID | CONTENTS_MOVEABLE | CONTENTS_OPAQUE;
 pub const SURF_SKY: u16 = 0x0004;
 pub const SURF_HITBOX: u16 = 0x8000;
@@ -124,6 +133,123 @@ pub struct World {
     pub displacements: Vec<DisplacementPatch>,
     displacement_inputs: Vec<DisplacementInput>,
     displacement_trees: displacement::Acceleration,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PhysicalModelSolid {
+    pub solid: usize,
+    pub contents: u32,
+    pub surface_property: Option<Vec<u8>>,
+    pub shape: Arc<PhysicsShape>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PhysicalModel {
+    pub model: usize,
+    pub authored_bounds: Hull,
+    pub solids: Vec<PhysicalModelSolid>,
+    pub key_data: playsrc_phy::KeyData,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PhysicalModelInventory {
+    world: [u8; 32],
+    models: Vec<PhysicalModel>,
+}
+
+impl PhysicalModelInventory {
+    pub fn compile(world: &World, bsp: &Bsp, limits: SnapshotLimits) -> Result<Self, Error> {
+        let blocks = bsp
+            .physics_models(world.models.len())
+            .map_err(|_| error(ErrorCode::InvalidRange, Some(29)))?;
+        let mut models = Vec::with_capacity(blocks.len());
+        for block in blocks {
+            let contents = *world
+                .model_contents
+                .get(block.model_index)
+                .ok_or_else(|| error(ErrorCode::InvalidReference, Some(block.model_index)))?;
+            let asset = playsrc_phy::parse_payload(
+                block.collision,
+                block.keydata,
+                block.solid_count,
+                playsrc_phy::Profile::SourcePcPolygon,
+                playsrc_phy::Limits::default(),
+            )
+            .map_err(|_| error(ErrorCode::InvalidRange, Some(block.model_index)))?;
+            let mut solids = Vec::with_capacity(asset.solids.len());
+            for solid in 0..asset.solids.len() {
+                let properties = asset.key_data.blocks.iter().find(|candidate| {
+                    candidate.entries.iter().any(|entry| {
+                        matches!(entry, playsrc_phy::KeyValue::Scalar { key, value }
+                            if key.eq_ignore_ascii_case(b"index")
+                                && std::str::from_utf8(value).ok().and_then(|value| value.parse::<usize>().ok()) == Some(solid))
+                    })
+                });
+                let scalar = |name: &[u8]| {
+                    properties.and_then(|block| {
+                        block.entries.iter().find_map(|entry| match entry {
+                            playsrc_phy::KeyValue::Scalar { key, value }
+                                if key.eq_ignore_ascii_case(name) =>
+                            {
+                                Some(value.as_slice())
+                            }
+                            _ => None,
+                        })
+                    })
+                };
+                let solid_contents = scalar(b"contents")
+                    .map(|value| {
+                        std::str::from_utf8(value)
+                            .ok()
+                            .and_then(|value| value.parse::<u32>().ok())
+                            .ok_or_else(|| error(ErrorCode::InvalidRange, Some(block.model_index)))
+                    })
+                    .transpose()?
+                    .unwrap_or(contents);
+                let mut identity = Sha256::new();
+                identity.update(world.identity);
+                identity.update((block.model_index as u64).to_le_bytes());
+                identity.update((solid as u64).to_le_bytes());
+                identity.update(block.collision);
+                let digest = identity.finalize();
+                let identity = u64::from_le_bytes(digest[..8].try_into().expect("shape identity"));
+                let shape =
+                    PhysicsShape::from_phy(identity, &asset, solid, limits, |_| solid_contents)?;
+                solids.push(PhysicalModelSolid {
+                    solid,
+                    contents: solid_contents,
+                    surface_property: scalar(b"surfaceprop").map(<[u8]>::to_vec),
+                    shape: Arc::new(shape),
+                });
+            }
+            let model = world.models.get(block.model_index).ok_or_else(|| error(ErrorCode::InvalidReference, Some(block.model_index)))?;
+            models.push(PhysicalModel {
+                model: block.model_index,
+                authored_bounds: Hull {
+                    mins: [model.mins.x.value(), model.mins.y.value(), model.mins.z.value()],
+                    maxs: [model.maxs.x.value(), model.maxs.y.value(), model.maxs.z.value()],
+                },
+                solids,
+                key_data:asset.key_data,
+            });
+        }
+        Ok(Self {
+            world: world.identity,
+            models,
+        })
+    }
+
+    pub fn world_identity(&self) -> [u8; 32] {
+        self.world
+    }
+
+    pub fn models(&self) -> &[PhysicalModel] {
+        &self.models
+    }
+
+    pub fn model(&self, model: usize) -> Option<&PhysicalModel> {
+        self.models.iter().find(|entry| entry.model == model)
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Hull {
@@ -634,6 +760,10 @@ impl World {
 
     pub fn overlaps_transformed_model_hull(&self, model:usize, transform:Transform, position:[f32;3], hull:Hull) -> Result<bool,Error> {
         self.trace_model_hull(model,ObjectTraceRequest {identity:0,transform,start:position,end:position,hull,mask:u32::MAX},0,ObjectRole::Entity).map(|trace|trace.start_solid)
+    }
+
+    pub fn trace_brush_model(&self, model: usize, request: ObjectTraceRequest) -> Result<Trace, Error> {
+        self.trace_model_hull(model, request, request.identity, ObjectRole::Entity)
     }
 
     pub(crate) fn trace_model_hull(
@@ -1721,7 +1851,7 @@ mod tests {
             })
         );
         assert_eq!(direct.plane.unwrap().normal, [-1.0, 0.0, 0.0]);
-        assert_eq!(&ordered.snapshot_bytes().unwrap()[..8], b"CSNP\x03\0\0\0");
+        assert_eq!(&ordered.snapshot_bytes().unwrap()[..8], b"CSNP\x04\0\0\0");
     }
 
     #[test]
@@ -1827,7 +1957,7 @@ mod tests {
     }
 
     #[test]
-    fn physics_convexes_preserve_feature_contents_and_transform() {
+    fn physics_query_dispatch_preserves_feature_contents_and_transform() {
         let vertices = vec![
             [-1.0, -1.0, -1.0],
             [1.0, -1.0, -1.0],
@@ -1860,10 +1990,12 @@ mod tests {
                 contents: 0x4000_0001,
                 vertices,
                 triangles,
+                authored: None,
             }],
             SnapshotLimits::default(),
         )
         .unwrap();
+        assert!(shape.authored_convex(0).is_none());
         let world = World::empty();
         let snapshot = Snapshot::compile(
             &world,
@@ -1882,7 +2014,9 @@ mod tests {
                 collision_group: 0,
                 contents: 0,
                 surface_flags: 0,
-                shape: SnapshotShape::Physics(std::sync::Arc::new(shape)),
+                shape: SnapshotShape::Physics(std::sync::Arc::new(crate::snapshot::FixturePhysicsQuery {
+                    geometry: std::sync::Arc::new(shape), calls: Default::default(),
+                })),
             }],
             SnapshotLimits::default(),
         )
@@ -1919,7 +2053,7 @@ mod tests {
                 feature: Feature::Convex {
                     solid: 2,
                     convex: 3,
-                    triangle: Some(_),
+                    triangle: None,
                 },
             })
         ));

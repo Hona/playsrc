@@ -401,6 +401,7 @@ const ROOTS: &[(&str, &str, bool)] = &[
         true,
     ),
     ("hud", "resource/ui/huddemomanpipes.res", true),
+    ("hud", "resource/ui/huddemomancharge.res", true),
     ("hud", "resource/ui/hudmediccharge.res", true),
     ("hud", "resource/ui/hudkillstreaknotice.res", true),
     ("hud", "resource/ui/targetid.res", true),

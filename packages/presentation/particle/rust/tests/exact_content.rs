@@ -26,7 +26,8 @@ fn configured_bundle() -> Vec<u8> {
     let configuration = fs::read_to_string(root.join("playsrc.local.json")).unwrap();
     let source_cache = json_string_field(&configuration, "sourceCacheDir");
     playsrc_asset_graph::read_resource_set(
-        &PathBuf::from(source_cache).join("browser-bundles/jump_beef.graph.json"),
+        &PathBuf::from(&source_cache).join("browser-bundles/jump_beef.graph.json"),
+        &PathBuf::from(&source_cache).join("browser-bundles/jump_beef.graph/objects"),
         None,
     )
     .unwrap()

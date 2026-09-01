@@ -25,6 +25,7 @@ members = [
   "packages/presentation/audio/rust",
   "packages/presentation/audio/wasm",
   "packages/runtime/movement/rust",
+  "packages/runtime/physics/rust",
   "games/tf2/rust",
   "games/tf2/wasm",
   "tools/source-bundle/rust",

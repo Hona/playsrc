@@ -18,12 +18,17 @@ pub mod dynamic_prop;
 pub mod health;
 pub mod koth;
 mod map_runtime;
+mod entity_queries;
 mod spotlight;
 pub mod particle_resources;
 pub mod medic;
 pub mod melee;
 pub mod pickup;
 pub mod projectile_weapon;
+pub mod rigid_body;
+pub mod rigid_world;
+mod rigid_projectiles;
+pub use rigid_projectiles::{StudioRigidResource,RigidProjectileModels};
 pub mod pyro;
 pub mod random;
 pub mod round;
@@ -52,7 +57,7 @@ pub mod jump;
 
 pub use map_runtime::{
     ActorContact, CONTENTS_BLUE_TEAM, CONTENTS_RED_TEAM, CombatPlayerFacts, Effect as MapEffect,
-    EntityEvent, EntityEventKind, EntityTransform, GameplayWorld, MapCounts, MapPhase,
+    EntityEvent, EntityEventKind, EntityTransform, GameplayWorld, GrenadeEntityHit, ProjectileSolidTrace, projectile_solid_group, MapCounts, MapPhase,
     MapPickupSnapshot, MapRuntime, MoverRequest, MoverResult, MoverResultKind, PlayerContactFacts,
     RegenerateContact, respawn_barrier_collides, regenerate_associated_model,
 };
@@ -78,6 +83,7 @@ pub const FL_ANIMDUCKING: u32 = 1 << 2;
 pub const FL_CLIENT: u32 = 1 << 8;
 pub const FL_INWATER: u32 = 1 << 10;
 pub const MAX_PROJECTILES: usize = 64;
+pub(crate) const STANDING_PLAYER_HULL: Hull = Hull { mins: [-24.0, -24.0, 0.0], maxs: [24.0, 24.0, 82.0] };
 const MASK_SOLID: u32 = 0x0200_400b;
 const MASK_SHOT: u32 = 0x4600_4003;
 const MASK_SOLID_BRUSH_ONLY: u32 = 0x0000_400b;
@@ -163,10 +169,7 @@ impl MovementPolicy {
             ),
             surface_friction: self.modifiers.surface_friction,
             surface_jump_factor: self.modifiers.surface_jump_factor,
-            standing_hull: Hull {
-                mins: [-24.0, -24.0, 0.0],
-                maxs: [24.0, 24.0, 82.0],
-            },
+            standing_hull: STANDING_PLAYER_HULL,
             crouched_hull: Hull {
                 mins: [-24.0, -24.0, 0.0],
                 maxs: [24.0, 24.0, 62.0],
@@ -339,6 +342,15 @@ pub enum ProjectileKind {
     Sticky = 2,
     Syringe = 3,
     Flare = 4,
+    Grenade = 5,
+}
+
+impl ProjectileKind {
+    pub const fn uses_rigid_physics(self)->bool {matches!(self,Self::Sticky|Self::Grenade)}
+    pub(crate) fn entity_hull(self) -> Hull {
+        let extent = if self.uses_rigid_physics() { 2.0 } else if self == Self::Syringe { 1.0 } else { 0.0 };
+        Hull { mins: [-extent; 3], maxs: [extent; 3] }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -359,54 +371,6 @@ pub enum ProjectileState {
     Flying = 1,
     StuckUnarmed = 2,
     StuckArmed = 3,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProjectileContactKind {
-    World,
-    DynamicProp,
-    Other,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ProjectileContact {
-    pub kind: ProjectileContactKind,
-    pub normal: [f32; 3],
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ProjectilePhysicsResult {
-    pub projectile: u32,
-    pub tick: u64,
-    pub position: [f32; 3],
-    pub velocity: [f32; 3],
-    pub orientation: [f32; 4],
-    pub angular_velocity: [f32; 3],
-    pub motion_enabled: bool,
-    pub contact: Option<ProjectileContact>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProjectilePhysicsOperation {
-    Create,
-    Step,
-    DisableMotion,
-    Destroy,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ProjectilePhysicsRequest {
-    pub operation: ProjectilePhysicsOperation,
-    pub projectile: u32,
-    pub tick: u64,
-    pub position: [f32; 3],
-    pub velocity: [f32; 3],
-    pub orientation: [f32; 4],
-    pub angular_velocity: [f32; 3],
-    pub hull: Hull,
-    pub gravity_scale: f32,
-    pub friction: f32,
-    pub elasticity: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -490,6 +454,21 @@ pub struct Projectile {
 
 #[derive(Clone, Debug)]
 struct LiveProjectile {
+    deflect_owner: Option<u32>,
+    deflected_until: Option<f32>,
+    retiring: bool,
+    solid: bool,
+    launcher_linked: bool,
+    prearm_think_tick: Option<u64>,
+    server_arm_think_tick: Option<u64>,
+    teammate_collision_enabled: bool,
+    rigid_entity_velocity:[f32;3],
+    full_damage:f32,
+    detonate_time:Option<f32>,
+    minimum_sleep_time:f32,
+    touched_time:Option<f32>,
+    in_solid:bool,
+    teammate_collision_tick:u64,
     presentation: Projectile,
     killing_weapon: &'static str,
     gravity_scale: f32,
@@ -498,11 +477,31 @@ struct LiveProjectile {
     flare_angles: [f32; 3],
     armed: bool,
     creation_tick: u64,
-    arm_tick: u64,
     next_think_tick: u64,
-    forced_detonate_tick: Option<u64>,
+    detonate_on_think: bool,
     motion_enabled: bool,
     direct_target: Option<u32>,
+}
+
+impl LiveProjectile {
+    fn rigid_think_due(&self,tick:u64)->bool {
+        [Some(self.next_think_tick),self.prearm_think_tick,self.server_arm_think_tick,
+            (!self.teammate_collision_enabled).then_some(self.teammate_collision_tick)]
+            .into_iter().flatten().any(|due|due>0&&due<=tick)
+    }
+    fn advance_rigid_contexts(&mut self,tick:u64,interval:f32) {
+        if self.prearm_think_tick.is_some_and(|due|due>0&&due<=tick) {
+            self.prearm_think_tick=None;
+            self.server_arm_think_tick=Some(source_think_tick(tick,0.8,interval));
+        }
+        if self.teammate_collision_tick>0&&self.teammate_collision_tick<=tick {self.teammate_collision_enabled=true;}
+        if self.server_arm_think_tick.is_some_and(|due|due>0&&due<=tick) {self.server_arm_think_tick=None;}
+    }
+    fn same_launcher(&self,other:&Self)->bool {
+        self.presentation.owner_identity==other.presentation.owner_identity
+            && self.presentation.launcher_identity==other.presentation.launcher_identity
+            && self.presentation.launcher_source==other.presentation.launcher_source
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -844,6 +843,9 @@ pub struct Snapshot {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProducerSnapshot {
+    pub rigid_physics_ready:bool,
+    pub pipebomb_count: usize,
+    pub charge_progress: Option<f32>,
     pub decapitations: i32,
     pub revenge_crits: i32,
     pub tick: u64,
@@ -862,7 +864,6 @@ pub struct ProducerSnapshot {
     pub projectiles: Vec<Projectile>,
     pub activities: Vec<ActivityEvent>,
     pub lifecycle_events: Vec<LifecycleEvent>,
-    pub physics_requests: Vec<ProjectilePhysicsRequest>,
     pub rocket_trace_requests: Vec<RocketTraceRequest>,
     pub radius_damage_requests: Vec<RadiusDamageRequest>,
     pub mover_requests: Vec<MoverRequest>,
@@ -978,7 +979,8 @@ pub struct Session<W: GameplayWorld + Clone> {
     sound_selection: SoundSelection,
     random_draws: Vec<RandomDraw>,
     audio_events: Vec<AudioEvent>,
-    physics_requests: Vec<ProjectilePhysicsRequest>,
+    rigid:Option<rigid_projectiles::State>,
+    entity_queries: entity_queries::Queries,
     activity_events: Vec<ActivityEvent>,
     mover_requests: Vec<MoverRequest>,
     lifecycle_events: Vec<LifecycleEvent>,
@@ -1024,6 +1026,9 @@ pub enum Error {
     ProjectileLimit,
     InvalidStickyLaunchRandom,
     InvalidProjectilePhysics,
+    MissingRigidResources,
+    Rigid(rigid_world::Error),
+    ProjectileTrace(playsrc_collision::Error),
     MissingWeapon { owner: u32, weapon: Weapon },
     Damage(damage::DamageError),
     InvalidPlayerPosition,
@@ -1071,6 +1076,39 @@ impl From<MapError> for Error {
 }
 
 impl<W: GameplayWorld + Clone> Session<W> {
+    fn sync_local_query(&mut self) {
+        let solid = self.lifecycle == PlayerLifecycle::Active && self.health > 0
+            && !self.actor_condition(PLAYER_IDENTITY, condition::ConditionId::GHOST);
+        self.entity_queries.actor_state(PLAYER_IDENTITY, self.movement.position, solid)
+            .expect("local player query identity");
+    }
+
+    fn sync_bot_queries(&mut self) -> Result<(), Error> {
+        if let Some(bots) = &mut self.bots {
+            for change in bots.take_query_changes() {
+                match change {
+                    bot::QueryChange::State { identity, origin, solid } => self.entity_queries.actor_state(identity, origin, solid),
+                    bot::QueryChange::Remove(identity) => self.entity_queries.destroy(entity_queries::Entity::Actor(identity)),
+                }.map_err(Error::ProjectileTrace)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn sync_building_queries(&mut self) -> Result<(), Error> {
+        for change in self.buildings.take_query_changes() {
+            match change {
+                building::QueryChange::Create { identity, position, hull } => {
+                    let entity = entity_queries::Entity::Building(identity);
+                    self.entity_queries.register(entity).map_err(Error::ProjectileTrace)?;
+                    self.entity_queries.bind_bounds(entity, position, hull, None).map_err(Error::ProjectileTrace)?;
+                    self.entity_queries.set_solid(entity, true).map_err(Error::ProjectileTrace)?;
+                }
+                building::QueryChange::Remove(identity) => self.entity_queries.destroy(entity_queries::Entity::Building(identity)).map_err(Error::ProjectileTrace)?,
+            }
+        }
+        Ok(())
+    }
     pub fn new(collision: W, spawn: [f32; 3], map: MapRuntime) -> Self {
         let movement_modifiers = MovementModifiers::default();
         let movement_policy = MovementPolicy {
@@ -1182,7 +1220,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
             sound_selection: SoundSelection::new(),
             random_draws: Vec::new(),
             audio_events: Vec::new(),
-            physics_requests: Vec::new(),
+            rigid:None,
+            entity_queries: {
+                let mut queries = entity_queries::Queries::new(u16::MAX as usize, u16::MAX as usize).expect("fixed entity query limits");
+                queries.actor_state(PLAYER_IDENTITY, spawn, true).expect("fixed player query registration");
+                queries
+            },
             activity_events: Vec::new(),
             mover_requests: Vec::new(),
             lifecycle_events: Vec::new(),
@@ -1284,6 +1327,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let generation = if owner == PLAYER_IDENTITY { self.loadout.get(&weapon)?.generation }
             else { self.bots.as_ref()?.weapon_runtime(owner, weapon)?.generation };
         Some(weapon::WeaponSource { owner, definition_index, generation })
+    }
+    pub fn pipebomb_count(&self,owner:u32)->usize {
+        let Some(source)=self.weapon_source(owner,Weapon::StickybombLauncher) else {return 0;};
+        self.projectiles.iter().filter(|projectile|projectile.launcher_linked && projectile.presentation.launcher_source==Some(source)).count()
     }
 
     pub fn source_weapon_is_live(&self, source: weapon::WeaponSource, weapon: Weapon) -> bool {
@@ -1679,10 +1726,6 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.loadout.get(&weapon).copied()
     }
 
-    pub fn physics_requests(&self) -> &[ProjectilePhysicsRequest] {
-        &self.physics_requests
-    }
-
     pub fn activity_events(&self) -> &[ActivityEvent] {
         &self.activity_events
     }
@@ -1797,6 +1840,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
     pub fn producer_snapshot(&self) -> ProducerSnapshot {
         ProducerSnapshot {
+            rigid_physics_ready:self.rigid.is_some(),
+            pipebomb_count: if self.class == PlayerClass::Demoman { self.pipebomb_count(PLAYER_IDENTITY) } else { 0 },
+            charge_progress: self.weapon.and_then(|weapon| self.loadout.get(&weapon))
+                .and_then(|weapon| weapon.charge_progress(self.tick, self.movement_configuration.tick_interval)),
             decapitations: self.decapitations,
             revenge_crits: self.revenge_crits,
             tick: self.tick,
@@ -1815,11 +1862,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
             projectiles: self
                 .projectiles
                 .iter()
+                .filter(|projectile| !projectile.retiring)
                 .map(|projectile| projectile.presentation.clone())
                 .collect(),
             activities: self.activity_events.clone(),
             lifecycle_events: self.lifecycle_events.clone(),
-            physics_requests: self.physics_requests.clone(),
             rocket_trace_requests: self.rocket_trace_requests.clone(),
             radius_damage_requests: self.radius_damage_requests.clone(),
             mover_requests: self.mover_requests.clone(),
@@ -1859,6 +1906,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.pending_control_point_events.append(&mut phase.control_point_events);
         self.pending_payload_events.append(&mut phase.payload_events);
         self.movement.position = add(self.movement.position, phase.carry);
+        self.sync_local_query();
         self.mover_requests.retain(|request| {
             !results.iter().any(|result| {
                 result.request_id == request.request_id && result.kind == MoverResultKind::Completed
@@ -1966,6 +2014,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             return Err(Error::InvalidPlayerPosition);
         }
         self.movement.position = position.map(|value| value.clamp(-16_384.0, 16_384.0));
+        self.sync_local_query();
         Ok(())
     }
 
@@ -2017,19 +2066,17 @@ impl<W: GameplayWorld + Clone> Session<W> {
     }
 
     pub fn advance(&mut self, command: Command) -> Result<Snapshot, Error> {
-        self.advance_with_external(command, &[], &[], None)
+        self.advance_with_external(command, &[], None)
     }
 
     pub fn advance_with_external(
         &mut self,
         command: Command,
-        physics_results: &[ProjectilePhysicsResult],
         rocket_results: &[RocketTraceResult],
         expected_sticky_random: Option<StickyLaunchRandom>,
     ) -> Result<Snapshot, Error> {
         let (candidate, snapshot) = self.clone().into_advanced(
             command,
-            physics_results,
             rocket_results,
             expected_sticky_random,
         )?;
@@ -2042,13 +2089,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
     pub fn into_advanced(
         mut self,
         command: Command,
-        physics_results: &[ProjectilePhysicsResult],
         rocket_results: &[RocketTraceResult],
         expected_sticky_random: Option<StickyLaunchRandom>,
     ) -> Result<(Self, Snapshot), Error> {
         let snapshot = self.advance_inner(
             command,
-            physics_results,
             rocket_results,
             expected_sticky_random,
         )?;
@@ -2058,16 +2103,17 @@ impl<W: GameplayWorld + Clone> Session<W> {
     fn advance_inner(
         &mut self,
         mut command: Command,
-        physics_results: &[ProjectilePhysicsResult],
         rocket_results: &[RocketTraceResult],
         expected_sticky_random: Option<StickyLaunchRandom>,
     ) -> Result<Snapshot, Error> {
+        let rigid_thinks=self.projectiles.iter().filter(|projectile|projectile.presentation.kind.uses_rigid_physics() && projectile.rigid_think_due(self.tick)).map(|projectile|projectile.presentation.identity).collect::<Vec<_>>();
         if let Some(preferences) = command.weapon_preferences { self.weapon_preferences = preferences; }
         self.raw_view_angles = [command.pitch_degrees, command.movement.yaw_degrees, 0.0];
         admission_metrics::begin_tick(self.tick);
         self.map.set_control_point_facts(self.control_point_facts());
         self.refresh_capture_actor_facts();
         let critical_time = self.tick as f32 * self.movement_configuration.tick_interval;
+        if let Some(rigid)=&mut self.rigid {rigid.world.begin_frame(critical_time).map_err(Error::Rigid)?;}
         self.critical_history.advance(critical_time).map_err(Error::Damage)?;
         if let Some(bots) = self.bots.as_mut() {
             bots.advance_critical_histories(critical_time).map_err(Error::Damage)?;
@@ -2091,22 +2137,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.ctf_capture_bonus_until = None;
         }
 
-        let expected_physics_results: Vec<_> = self
-            .physics_requests
-            .iter()
-            .copied()
-            .filter(|request| {
-                matches!(
-                    request.operation,
-                    ProjectilePhysicsOperation::Create | ProjectilePhysicsOperation::Step
-                )
-            })
-            .collect();
         let expected_rocket_results = self.rocket_trace_requests.clone();
         self.random_draws.clear();
         self.audio_events.clear();
         self.shotgun_pellets.clear();
-        self.physics_requests.clear();
         self.activity_events.clear();
         self.lifecycle_events.clear();
         self.regenerate_animation_events.clear();
@@ -2124,7 +2158,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         }
         if let Some(team) = self.pending_team_change.take() {
             self.stop_flame(false);
-            self.fizzle_projectiles(&mut projectile_events, false);
+            self.remove_projectiles(&mut projectile_events, false)?;
             self.lifecycle_events.push(LifecycleEvent {
                 tick: self.tick,
                 kind: LifecycleEventKind::TeamChanged,
@@ -2144,11 +2178,6 @@ impl<W: GameplayWorld + Clone> Session<W> {
         {
             objective_events.extend(self.drop_objective(command.drop_item)?);
         }
-        self.apply_projectile_physics(
-            &expected_physics_results,
-            physics_results,
-            &mut projectile_events,
-        )?;
         let mut map_phase = self.apply_rocket_traces(
             &expected_rocket_results,
             rocket_results,
@@ -2158,7 +2187,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         map_phase.control_point_events.splice(0..0, std::mem::take(&mut self.pending_control_point_events));
         map_phase.payload_events.splice(0..0, std::mem::take(&mut self.pending_payload_events));
         self.emit_due_regenerate_model_closes();
-        self.apply_selection(command, &mut events, &mut projectile_events);
+        self.apply_selection(command, &mut events, &mut projectile_events)?;
         if std::mem::take(&mut self.equipment_respawn_requested)
             && self.lifecycle == PlayerLifecycle::Active && self.health > 0
             && !self.equipment.class_matches(&self.active_equipment, self.class)
@@ -2167,7 +2196,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             let hull = self.movement.active_hull(MovementPolicy { class: self.class, modifiers: self.movement_modifiers }.resolve());
             let center = add(self.movement.position, scale(add(hull.mins, hull.maxs), 0.5));
             if self.map.point_in_friendly_respawn_room(&self.collision, self.team_selection.local_team(), center)? {
-                self.respawn(&mut projectile_events, &mut events, MovementPolicy { class: self.class, modifiers: self.movement_modifiers }.resolve());
+                self.respawn(&mut projectile_events, &mut events, MovementPolicy { class: self.class, modifiers: self.movement_modifiers }.resolve())?;
             }
         }
         if let Some(request) = command.building_request {
@@ -2304,6 +2333,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 .map_err(Error::TeamSelection)?;
             admission_metrics::emit(admission_metrics::ROSTER, 0);
         }
+        self.sync_bot_queries()?;
         let roster = self.team_selection.snapshot();
         let mut round_facts = round::Facts {
             red_players: roster.red_count,
@@ -2407,7 +2437,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             }
             self.buildings.reset();
             let mut point_events = Vec::new();
-            self.fizzle_projectiles(&mut projectile_events, true);
+            self.remove_projectiles(&mut projectile_events, true)?;
             let facts = self.control_point_facts();
             if let Some(points) = self.map.control_points_mut() {
                 points.round_spawn(self.tick as f32 * self.movement_configuration.tick_interval, full_reset, &mut point_events);
@@ -2433,7 +2463,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             {
                 self.respawn(&mut projectile_events, &mut events, MovementPolicy {
                     class: self.class, modifiers: self.movement_modifiers,
-                }.resolve());
+                }.resolve())?;
             }
             if let Some(bots) = &mut self.bots {
                 if let Some(points) = self.map.control_points() { bots.synchronize_control_point_spawns(points); }
@@ -2464,6 +2494,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         .resolve();
 
         if let Some(bots) = &mut self.bots { bots.advance_conditions(self.tick as f32 * self.movement_configuration.tick_interval); }
+        self.sync_bot_queries()?;
         if self.conditions.contains(Condition::Aiming) {
             if self.class == PlayerClass::Heavy {
                 let aiming_speed = self.equipment_attributes.player("mult_player_aiming_movespeed", 110.0);
@@ -2524,8 +2555,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let (move_forward, move_side) = self.movement_stuns.command(self.tick as f32 * self.movement_configuration.tick_interval,
             command.movement.forward, -command.movement.side);
 
+        self.sync_local_query();
+        self.sync_map_queries()?;
+        self.sync_building_queries()?;
         let movement_result = step(
-            &self.collision,
+            &entity_queries::QueryWorld { world: &self.collision, queries: std::cell::RefCell::new(&mut self.entity_queries) },
             self.movement,
             StepInput {
                 command_number: u32::try_from(self.tick).unwrap_or(u32::MAX),
@@ -2548,6 +2582,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             movement_policy,
         )?;
         self.movement = movement_result.state;
+        self.sync_local_query();
         if self.blast_since_movement && movement_result.ground_detach_by_upward_speed {
             self.conditions.insert(Condition::BlastJumping);
         }
@@ -2610,12 +2645,14 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 events.push(Event::WeaponChanged(Weapon::Wrench));
             }
         }
+        self.sync_building_queries()?;
         self.advance_afterburn(&mut events)?;
+        self.sync_bot_queries()?;
         let bot_attacks = if command.nextbot_stop {
             self.bots.as_mut().map_or_else(Vec::new, |bots| bots.due_melee_attacks(self.tick))
         } else if let Some(bots) = &mut self.bots {
             bots.advance(
-                &self.collision,
+                &entity_queries::QueryWorld { world: &self.collision, queries: std::cell::RefCell::new(&mut self.entity_queries) },
                 self.tick,
                 bot::Human {
                     team: self.team_selection.local_team(),
@@ -2684,6 +2721,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let mut teleported = false;
         if let Some((position, _yaw)) = building_effects.teleport {
             self.movement.position = position;
+            self.sync_local_query();
             self.movement.ground = None;
             teleported = true;
         }
@@ -2836,6 +2874,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     &mut self.activity_events,
                 )
             };
+            if active_weapon == Weapon::StickybombLauncher && primary == PrimaryResult::ChargeStarted {
+                self.sticky_charge_sound(AudioAction::Play);
+            }
             if active_weapon == Weapon::Minigun {
                 let state = self.loadout[&active_weapon].minigun_state;
                 if let Some(aiming) = weapon::minigun_aiming_transition(previous_minigun_state, state) {
@@ -2855,6 +2896,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         command.movement.yaw_degrees,
                         &mut events,
                         None,
+                        &mut projectile_events,
                     )?;
                     map_phase.append(phase);
                 } else if matches!(
@@ -2869,11 +2911,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 ) {
                     self.swing_melee(active_weapon)?;
                 } else if active_weapon == Weapon::Knife {
-                    self.resolve_knife(
+                    map_phase.append(self.resolve_knife(
                         command.pitch_degrees,
                         command.movement.yaw_degrees,
                         &mut events,
-                    )?;
+                        &mut projectile_events,
+                    )?);
                 } else if active_weapon == Weapon::Fists {
                     self.swing_melee(active_weapon)?;
                 } else if !matches!(
@@ -2888,6 +2931,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         None,
                         &mut projectile_events,
                     )?;
+                    if active_weapon == Weapon::StickybombLauncher { self.sticky_charge_sound(AudioAction::Stop); }
                 }
             }
             if active_weapon == Weapon::Minigun { self.update_minigun_audio(PLAYER_IDENTITY, previous_minigun_state); }
@@ -2900,8 +2944,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     .is_some_and(|due| self.tick > due)
             {
                 self.loadout.get_mut(&active_weapon).unwrap().smack_due_tick = None;
-                let phase =
-                    self.smack_fists(command.pitch_degrees, command.movement.yaw_degrees, &mut events)?;
+                let phase = self.smack_fists(command.pitch_degrees, command.movement.yaw_degrees, &mut events, &mut projectile_events)?;
                 map_phase.append(phase);
             }
             if self.pending_melee_tick.is_some_and(|due| self.tick > due) {
@@ -2917,12 +2960,13 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         | Weapon::Bottle
                         | Weapon::Bonesaw
                 ) {
-                    self.resolve_melee(
+                    map_phase.append(self.resolve_melee(
                         active_weapon,
                         command.pitch_degrees,
                         command.movement.yaw_degrees,
                         &mut events,
-                    )?;
+                        &mut projectile_events,
+                    )?);
                 }
             }
             let mut empty_reload = false;
@@ -2958,23 +3002,13 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     .loadout
                     .get_mut(&active_weapon)
                     .expect("active weapon belongs to loadout");
-                if !self.spy.is_some_and(|spy| spy.cloaked)
-                    && (command.reload
-                        || empty_reload
-                        || (self.auto_reload && !command.fire && !command.detonate))
-                {
-                    state.start_reload(
-                        self.tick,
-                        self.movement_configuration.tick_interval,
-                        &mut self.activity_events,
-                    );
+                if self.spy.is_some_and(|spy| spy.cloaked) {
+                    state.advance_reload(self.tick,self.movement_configuration.tick_interval,&mut self.activity_events,&mut ammo_events);
+                } else {
+                    state.reload_frame(self.tick,self.movement_configuration.tick_interval,
+                        command.reload||empty_reload||(self.auto_reload&&!command.fire&&!command.detonate),
+                        &mut self.activity_events,&mut ammo_events);
                 }
-                state.advance_reload(
-                    self.tick,
-                    self.movement_configuration.tick_interval,
-                    &mut self.activity_events,
-                    &mut ammo_events,
-                );
             }
             let reload_sound = self.activity_events[reload_activity_start..]
                 .iter()
@@ -3000,6 +3034,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     (Weapon::SyringeGun, weapon::WeaponActivity::ReloadLoop) => {
                         Some(SoundDefinition::SyringeReload)
                     }
+                    (Weapon::GrenadeLauncher,weapon::WeaponActivity::ReloadLoop)=>Some(SoundDefinition::GrenadeReload),
                     _ => None,
                 });
             if let Some(definition) = reload_sound {
@@ -3035,23 +3070,24 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 reserve: event.reserve,
             });
         }
-        self.advance_projectiles(
-            self.movement_configuration.tick_interval,
-            &mut projectile_events,
-            &mut events,
-        )?;
         if command.detonate
             && self.weapon != Some(Weapon::Flamethrower)
             && self.spy.is_none()
             && self.lifecycle == PlayerLifecycle::Active
             && self.health > 0
         {
-            self.detonate(&mut projectile_events, &mut events)?;
+            map_phase.append(self.detonate(&mut projectile_events, &mut events)?);
         }
+        map_phase.append(self.advance_projectiles(
+            self.movement_configuration.tick_interval,
+            &rigid_thinks,
+            &mut projectile_events,
+            &mut events,
+        )?);
 
         if self.health <= 0 && self.lifecycle == PlayerLifecycle::Active {
             objective_events.extend(self.drop_objective(false)?);
-            self.die(&mut projectile_events);
+            self.die(&mut projectile_events)?;
         }
         let mut respawned = false;
         let eligible = self.lifecycle == PlayerLifecycle::Dying && self.bots.is_some() && self.death_tick.is_some_and(|death| self.round.player_can_respawn(self.team_selection.local_team(), death as f32 * self.movement_configuration.tick_interval));
@@ -3062,7 +3098,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 || self.bots.is_none()))
             || eligible)
         {
-            self.respawn(&mut projectile_events, &mut events, movement_policy);
+            self.respawn(&mut projectile_events, &mut events, movement_policy)?;
             respawned = true;
         }
 
@@ -3116,12 +3152,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     jump::Request::FizzleOwnedProjectiles { player_identity }
                         if *player_identity == PLAYER_IDENTITY =>
                     {
-                        self.fizzle_projectiles(&mut projectile_events, false)
+                        self.remove_projectiles(&mut projectile_events, false)?
                     }
                     jump::Request::Respawn { player_identity }
                         if *player_identity == PLAYER_IDENTITY =>
                     {
-                        self.respawn(&mut projectile_events, &mut events, movement_policy)
+                        self.respawn(&mut projectile_events, &mut events, movement_policy)?
                     }
                     _ => {}
                 }
@@ -3297,6 +3333,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.publish_melee_condition_audio();
         self.advance_manmelter_effects();
         events.append(&mut self.pending_weapon_effects);
+        map_phase.append(self.advance_rigid_projectiles(&mut projectile_events,&mut events)?);
+        self.sync_map_queries()?;
         self.tick += 1;
         merge_mover_requests(&mut self.mover_requests, &map_phase.mover_requests);
         self.map_effects = map_phase.effects.clone();
@@ -3320,6 +3358,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 - self.loadout[&Weapon::Revolver].hitscan.last_accuracy_tick as f32 * self.movement_configuration.tick_interval)
         } else { 1.0 };
         self.payload_events=std::mem::take(&mut map_phase.payload_events);
+        self.flush_rigid_impact_sounds()?;
         Ok(Snapshot {
             weapon_crosshair_scale,
             equipped_items: self.active_equipment.equipped_items(self.class),
@@ -3343,6 +3382,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             projectiles: self
                 .projectiles
                 .iter()
+                .filter(|projectile| !projectile.retiring)
                 .map(|projectile| projectile.presentation.clone())
                 .collect(),
             projectile_events,
@@ -3772,7 +3812,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         command: Command,
         events: &mut Vec<Event>,
         projectile_events: &mut Vec<ProjectileEvent>,
-    ) {
+    )->Result<(),Error> {
         if let Some(team) = command.select_team
             && team.is_gameplay()
             && team != self.team_selection.local_team()
@@ -3789,7 +3829,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.pending_team_change = None;
             self.stop_flame(false);
             self.buildings.reset();
-            self.fizzle_projectiles(projectile_events, false);
+            self.remove_projectiles(projectile_events, false)?;
             self.lifecycle_events.push(LifecycleEvent {
                 tick: self.tick,
                 kind: LifecycleEventKind::TeamChanged,
@@ -3845,7 +3885,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.conditions.clear();
             self.ctf_capture_bonus_until = None;
             self.lifecycle = PlayerLifecycle::Active;
-            self.fizzle_projectiles(projectile_events, false);
+            self.remove_projectiles(projectile_events, false)?;
             self.movement = MovementState::from_player(
                 Player {
                     position: self.spawn,
@@ -3903,6 +3943,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
             && weapon != Weapon::InvisibilityWatch
             && Some(weapon) != self.weapon
         {
+            if self.weapon == Some(Weapon::StickybombLauncher)
+                && self.loadout[&Weapon::StickybombLauncher].charge_begin_tick.is_some_and(|tick| tick as f32 * self.movement_configuration.tick_interval > 0.0) {
+                self.sticky_charge_sound(AudioAction::Stop);
+            }
             if self.weapon == Some(Weapon::Manmelter) {
                 self.stop_manmelter_charge();
                 if self.revenge_crits > 0 { self.conditions.remove(Condition::CritBoosted); }
@@ -3935,6 +3979,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             });
             events.push(Event::WeaponChanged(weapon));
         }
+        Ok(())
     }
 
     fn advance_sniper_scope(&mut self, command: Command) {
@@ -4055,6 +4100,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     angles,
                 } if !discontinuity => {
                     self.movement.position = position;
+                    self.sync_local_query();
                     self.movement.ground = None;
                     if let Some(angles) = angles { self.snap_view_angles(angles); }
                     *teleported = true;
@@ -4355,6 +4401,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
         );
         let wave = if definition.wave_count() == 1 {
             0
+        } else if definition.physical_impact_volume().is_some() {
+            // Impact playback emits the inspected raw wave, not the script.
+            assert_eq!(phase, SoundQueryPhase::Inspect);
+            self.draw_random_int(context, RandomDecision::SoundWave { definition, phase }, 0, i32::from(definition.wave_count()) - 1) as u8
         } else {
             let available = self.sound_selection.available_count(definition);
             let rank = self.draw_random_int(
@@ -4397,6 +4447,16 @@ impl<W: GameplayWorld + Clone> Session<W> {
             definition,
             SoundQueryPhase::Emit,
         )
+    }
+
+    fn sticky_charge_sound(&mut self, action: AudioAction) {
+        let definition = SoundDefinition::StickyCharge;
+        let samples = if action == AudioAction::Play {
+            self.sample_sound(RandomContext::PredictedPresentation, definition, SoundQueryPhase::Emit)
+        } else { SoundSamples { volume: 0.0, pitch: 0.0, wave: 0, sound_level: 0.0 } };
+        self.push_audio_event(AudioEvent { action, tick: self.tick, ordinal: 0, identity: AudioEventIdentity::WeaponSingle,
+            definition, source_kind: AudioSourceKind::Entity, source_identity: PLAYER_IDENTITY,
+            owner_identity: Some(PLAYER_IDENTITY), position: self.movement.position, samples });
     }
 
     fn push_audio_event(&mut self, mut event: AudioEvent) {
@@ -4493,7 +4553,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
         }
         if attack.phase == bot::AttackPhase::MeleeSwing { return self.start_melee_swing(attack.attacker, attack.weapon); }
         if attack.phase == bot::AttackPhase::MeleeSmack && attack.weapon != Weapon::Knife {
-            return self.resolve_melee_actor(attack.attacker, attack.weapon, attack.pitch_degrees, attack.yaw_degrees, events);
+            map_phase.append(self.resolve_melee_actor(attack.attacker, attack.weapon, attack.pitch_degrees, attack.yaw_degrees, events, projectile_events)?);
+            return Ok(());
         }
         if attack.weapon.is_rocket_launcher() || attack.weapon.is_flare_gun()
             || attack.weapon == Weapon::SyringeGun {
@@ -4548,7 +4609,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             return Ok(());
         }
         if ballistics::HitscanProfile::configured(attack.weapon).is_some() {
-            map_phase.append(self.fire_hitscan(attack.weapon, attack.pitch_degrees, attack.yaw_degrees, events, Some(attack))?);
+            map_phase.append(self.fire_hitscan(attack.weapon, attack.pitch_degrees, attack.yaw_degrees, events, Some(attack), projectile_events)?);
         }
         Ok(())
     }
@@ -4652,6 +4713,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
         } else {
             return Ok(None);
         }
+        self.sync_local_query();
+        self.sync_bot_queries()?;
         let dealt = u32::try_from((before - after).max(0)).unwrap_or(0);
         if input.attacker != 0 && input.attacker != input.victim {
             self.record_weapon_damage(input.attacker, damage::DamageHistoryInput {
@@ -5040,50 +5103,51 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 let (forward, _, _) =
                     angle_vectors(command.pitch_degrees, command.movement.yaw_degrees, 0.0);
                 let eye = add(self.movement.position, self.movement.view_offset);
-                let aim = self
-                    .collision
-                    .trace(
-                        eye,
-                        add(eye, scale(forward, 1.732_050_8 * 32_768.0)),
-                        Hull {
-                            mins: [0.0; 3],
-                            maxs: [0.0; 3],
-                        },
-                        MASK_SOLID,
-                    )?
-                    .end;
+                let radius = self.equipped_weapon_attribute(PLAYER_IDENTITY, Weapon::Flamethrower, "deflection_size_multiplier", 1.0) * pyro::AIRBLAST_RADIUS;
+                let candidates = self.airblast_candidates(eye, forward, radius)?;
                 let player_team = self.team_selection.local_team();
                 let deflector_source = self.weapon_source(PLAYER_IDENTITY, Weapon::Flamethrower);
                 let deflector_critical = condition::all_weapon_crit_boost(|condition| self.condition_word_contains(condition.value()));
                 let deflector_mini = self.source_weapon_attribute(deflector_source, Weapon::Flamethrower, "mini_rockets", 0.0).round_ties_even() != 0.0;
                 let deflector_practice = self.source_weapon_attribute(deflector_source, Weapon::Flamethrower, "no_self_blast_dmg", 0.0).round_ties_even() != 0.0;
                 let deflector_jumping = self.conditions.contains(Condition::BlastJumping);
-                for projectile in &mut self.projectiles {
+                for candidate in &candidates {
+                    if *candidate == entity_queries::Entity::Actor(PLAYER_IDENTITY) { continue; }
+                    if !self.airblast_visible(eye, *candidate)? { continue; }
+                    if let entity_queries::Entity::Actor(identity) = candidate {
+                        let Some(target) = self.bots.as_ref().and_then(|bots| bots.combat_targets().find(|target| target.identity == *identity)) else { continue; };
+                        let delta = sub(add(target.position, [0.0, 0.0, 41.0]), eye);
+                        let distance = length(delta);
+                        if distance <= 0.0 || distance > radius * 2.0
+                            || dot(delta, forward) / distance < pyro::AIRBLAST_CONE_DEGREES.to_radians().cos() { continue; }
+                        let maximum_health = self.maximum_health();
+                        let bots = self.bots.as_mut().expect("selected bot");
+                        if target.team == player_team {
+                            if bots.extinguish(target.identity) { self.health = (self.health + 20).min(maximum_health); }
+                        } else {
+                            bots.apply_impulse(target.identity, pyro::airblast_impulse(forward, target.velocity, Some([0.0, 0.0, 1.0])));
+                        }
+                        continue;
+                    }
+                    let entity_queries::Entity::Projectile(identity) = candidate else { continue; };
+                    let selected = self.projectiles.iter().find(|projectile| projectile.presentation.identity == *identity).ok_or(Error::InvalidProjectilePhysics)?;
+                    if selected.presentation.team == player_team { continue; }
+                    if self.equipped_weapon_attribute(PLAYER_IDENTITY, Weapon::Flamethrower, "airblast_deflect_projectiles_disabled", 0.0).round_ties_even() != 0.0 { continue; }
+                    let aim = self.airblast_aim(eye, forward)?;
+                    if self.projectiles.iter().any(|projectile| projectile.presentation.identity == *identity && projectile.presentation.kind.uses_rigid_physics()) {
+                        let center = self.actor_center(PLAYER_IDENTITY).ok_or(Error::InvalidProjectilePhysics)?;
+                        if self.airblast_rigid(*identity, PLAYER_IDENTITY, player_team, center, aim, projectile_events)? {
+                            self.emit_deflection_sound(*identity)?;
+                        }
+                        continue;
+                    }
+                    let projectile = self.projectiles.iter_mut().find(|projectile| projectile.presentation.identity == *identity).ok_or(Error::InvalidProjectilePhysics)?;
                     if !matches!(projectile.presentation.kind, ProjectileKind::Rocket | ProjectileKind::Flare) { continue; }
-                    let delta = sub(projectile.presentation.position, eye);
-                    let distance = length(delta);
-                    if projectile.presentation.team == player_team
-                        || distance <= 0.0
-                        || distance > pyro::AIRBLAST_RADIUS * 2.0
-                        || delta
-                            .iter()
-                            .zip(forward)
-                            .map(|(component, axis)| component * axis)
-                            .sum::<f32>()
-                            / distance
-                            < pyro::AIRBLAST_CONE_DEGREES.to_radians().cos()
-                    {
-                        continue;
-                    }
-                    let target = sub(aim, projectile.presentation.position);
-                    let target_length = length(target);
-                    if target_length == 0.0 {
-                        continue;
-                    }
-                    let direction = scale(target, 1.0 / target_length);
+                    if projectile.presentation.team == player_team { continue; }
+                    let direction = playsrc_physics::normalize_source_vector(sub(aim, projectile.presentation.position)).map_err(|_| Error::InvalidProjectilePhysics)?;
                     let speed = length(projectile.presentation.velocity);
                     projectile.presentation.velocity = scale(direction, speed);
-                    projectile.presentation.orientation = quaternion_from_direction(direction);
+                    projectile.presentation.orientation = deflection_orientation(direction);
                     projectile.presentation.team = player_team;
                     projectile.presentation.owner_identity = PLAYER_IDENTITY;
                     projectile.presentation.deflected = true;
@@ -5105,41 +5169,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     projectile.motion_enabled = true;
                     projectile.direct_target = None;
                     projectile_events.push(projectile_event(ProjectileEventKind::Deflect, &projectile.presentation, self.tick));
-                }
-                let targets: Vec<_> = self.bots.as_ref().map_or_else(Vec::new, |bots| {
-                    bots.combat_targets()
-                        .filter(|target| {
-                            let center = add(target.position, [0.0, 0.0, 41.0]);
-                            let delta = sub(center, eye);
-                            let distance = length(delta);
-                            distance <= pyro::AIRBLAST_RADIUS * 2.0
-                                && distance > 0.0
-                                && delta
-                                    .iter()
-                                    .zip(forward)
-                                    .map(|(component, axis)| component * axis)
-                                    .sum::<f32>()
-                                    / distance
-                                    >= pyro::AIRBLAST_CONE_DEGREES.to_radians().cos()
-                        })
-                        .collect()
-                });
-                let maximum_health = self.maximum_health();
-                if let Some(bots) = self.bots.as_mut() {
-                    for target in targets {
-                        if target.team == self.team_selection.local_team() {
-                            if bots.extinguish(target.identity) {
-                                self.health = (self.health + 20).min(maximum_health);
-                            }
-                        } else {
-                            let impulse = pyro::airblast_impulse(
-                                forward,
-                                target.velocity,
-                                Some([0.0, 0.0, 1.0]),
-                            );
-                            bots.apply_impulse(target.identity, impulse);
-                        }
-                    }
+                    self.emit_deflection_sound(*identity)?;
                 }
             }
         } else if fire && self.movement.water_level != 3 {
@@ -5417,6 +5447,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         yaw: f32,
         events: &mut Vec<Event>,
         bot_attack: Option<bot::Attack>,
+        projectile_events: &mut Vec<ProjectileEvent>,
     ) -> Result<MapPhase, Error> {
         let mut profile = ballistics::HitscanProfile::configured(weapon)
             .expect("hitscan weapon has a configured profile");
@@ -5501,14 +5532,14 @@ impl<W: GameplayWorld + Clone> Session<W> {
             origin,
         });
         let mut pending: Option<hitscan::DamageGroup> = None;
-        let accumulate = matches!(weapon, Weapon::Minigun | Weapon::Scattergun | Weapon::Shotgun | Weapon::HeavyShotgun | Weapon::EngineerShotgun);
-        let mut accumulated = BTreeMap::<u32, hitscan::DamageGroup>::new();
         let mut phase = MapPhase::default();
         self.refresh_player_hitboxes()?;
         let current_poses = self.posed_hitbox_tick == Some(self.tick);
         let attack = hitscan::Attack { owner, team, weapon, source: source_weapon, position: attacker_position, center: attacker_center, rules };
         let posed_actors: BTreeSet<u32> = if current_poses { self.posed_player_hitboxes.iter().map(|hitbox| hitbox.entity).collect() } else { BTreeSet::new() };
         for pellet in 0..profile.pellets {
+            self.sync_bot_queries()?;
+            self.flush_entity_queries()?;
             let seed = ((random::prediction_seed(self.tick as u32) & 255) + u32::from(pellet)) as i32;
             let mut direction = forward;
             for context in [RandomContext::Authority, RandomContext::PredictedPresentation].into_iter().take(if owner == PLAYER_IDENTITY { 2 } else { 1 }) {
@@ -5529,92 +5560,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 });
             }
             let end = add(origin, scale(direction, profile.range));
-            let impact = self.collision.trace(
-                origin,
-                end,
-                Hull {
-                    mins: [0.0; 3],
-                    maxs: [0.0; 3],
-                },
-                MASK_SHOT,
-            )?;
-            let mut player_hit: Option<playsrc_collision::StudioHitboxTrace> = None;
-            for candidate in &self.posed_player_hitboxes {
-                if !current_poses || candidate.entity == owner || candidate.team == team || self.bots.as_ref().is_some_and(|bots| bots.contains(candidate.entity) && !bots.active(candidate.entity)) {
-                    continue;
-                }
-                let entry = playsrc_collision::StudioHitbox {
-                    identity: candidate.hitbox,
-                    group: candidate.group,
-                    bone: candidate.bone,
-                    physics_bone: candidate.physics_bone,
-                    bone_contents: candidate.bone_contents,
-                    surface: None,
-                    minimum: candidate.minimum,
-                    maximum: candidate.maximum,
-                    bone_to_world: &candidate.bone_to_world,
-                };
-                let trace = playsrc_collision::trace_studio_hitboxes(
-                    playsrc_collision::StudioHitboxRequest {
-                        entity: u64::from(candidate.entity),
-                        origin: candidate.origin,
-                        scale: 1.0,
-                        start: origin,
-                        end,
-                        hull: Hull {
-                            mins: [0.0; 3],
-                            maxs: [0.0; 3],
-                        },
-                        mask: MASK_SHOT,
-                        hitboxes: std::slice::from_ref(&entry),
-                    },
-                )
-                .map_err(|_| Error::InvalidProjectilePhysics)?;
-                if let Some(trace) = trace
-                    && trace.fraction <= impact.fraction
-                    && player_hit
-                        .as_ref()
-                        .is_none_or(|prior| trace.fraction < prior.fraction)
-                {
-                    player_hit = Some(trace);
-                }
-            }
-            let mut boxed_hit = self.bots.as_ref().and_then(|bots| bots.intersect_enemy(team, origin, end, owner, |identity| !posed_actors.contains(&identity)))
-                .filter(|(_, fraction, _)| *fraction <= impact.fraction);
-            if owner != PLAYER_IDENTITY && self.lifecycle == PlayerLifecycle::Active && team.is_enemy(self.team_selection.local_team()) && !posed_actors.contains(&PLAYER_IDENTITY) {
-                let hull = self.movement.active_hull(MovementPolicy { class: self.class, modifiers: self.movement_modifiers }.resolve());
-                if let Some(fraction) = bot::segment_bounds(origin, end, add(self.movement.position, hull.mins), add(self.movement.position, hull.maxs))
-                    && fraction <= impact.fraction && boxed_hit.is_none_or(|(_, previous, _)| fraction < previous) {
-                    boxed_hit = Some((PLAYER_IDENTITY, fraction, add(origin, scale(sub(end, origin), fraction))));
-                }
-            }
-            if let Some((_, fraction, _)) = boxed_hit && player_hit.as_ref().is_some_and(|hit| hit.fraction <= fraction) { boxed_hit = None; }
-            else if boxed_hit.is_some() { player_hit = None; }
-            if player_hit.is_some()
-                || boxed_hit.is_some()
-                || impact.fraction < 1.0
-                || impact.start_solid
-            {
-                let position = player_hit
-                    .as_ref()
-                    .map(|hit| hit.end)
-                    .or_else(|| boxed_hit.map(|(_, _, position)| position))
-                    .unwrap_or(impact.end);
+            let (impact, damage_target, hitgroup) = self.trace_hitscan(owner, team, origin, end, &posed_actors)?;
+            if impact.fraction < 1.0 || impact.start_solid || impact.all_solid {
+                let position = impact.end;
                 let distance = length(sub(position, origin));
-                let target = player_hit
-                    .as_ref()
-                    .and_then(|hit| u32::try_from(hit.entity).ok())
-                    .or_else(|| boxed_hit.map(|(identity, _, _)| identity))
-                    .or_else(|| {
-                        impact
-                            .hit
-                            .filter(|identity| !self.collision.is_world(*identity))
-                            .and_then(|identity| u32::try_from(identity).ok())
-                    });
-                let hitgroup = player_hit
-                    .as_ref()
-                    .map_or(0, |hit| hit.hitgroup.max(0) as u8);
-                let facts = target.and_then(|identity| self.hitscan_target(identity));
+                let target = damage_target.map(hitscan::DamageTarget::identity);
+                let facts = match damage_target { Some(hitscan::DamageTarget::Actor(identity)) => self.hitscan_target(identity), _ => None };
                 let distance = facts.map_or(distance, |target| length(sub(target.center, attacker_center)));
                 let headshot = hitgroup == 1 && (zoomed && sniper_state.sniper_headshot_is_critical(
                     self.tick,
@@ -5637,15 +5588,17 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     damage::CritKind::Mini => (if rules.critical_falloff { range_multiplier } else { range_multiplier.max(1.0) }) * damage::MINICRIT_MULTIPLIER,
                     damage::CritKind::Full => if rules.critical_falloff { range_multiplier.min(1.0) * damage::CRIT_MULTIPLIER } else { damage::CRIT_MULTIPLIER },
                 };
-                if let Some(identity) = target {
-                    if !accumulate && pending.is_some_and(|group| group.victim != identity) {
-                        self.apply_bullet_group(attack, pending.take().unwrap(), events, &mut phase)?;
+                if let Some(target) = damage_target {
+                    if pending.is_some_and(|group| group.target != target) {
+                        self.apply_bullet_group(attack, pending.take().unwrap(), events, &mut phase, projectile_events)?;
                     }
-                    let initial = hitscan::DamageGroup { victim: identity, amount: 0.0, range_multiplier, position, crit,
+                    let initial = hitscan::DamageGroup { target, amount: 0.0, range_multiplier, position, force: [0.0; 3], crit,
                         custom: if headshot { damage::CustomDamage::Headshot } else { damage::CustomDamage::None } };
-                    let group = if accumulate { accumulated.entry(identity).or_insert(initial) } else { pending.get_or_insert(initial) };
+                    let group = pending.get_or_insert(initial);
                     group.amount += profile.damage;
                     group.position = position;
+                    group.force = add(group.force, scale(playsrc_physics::normalize_source_vector(direction)
+                        .map_err(|_| Error::InvalidProjectilePhysics)?, 2400.0));
                 }
                 let damage = amount;
                 events.push(Event::HitscanImpact {
@@ -5656,7 +5609,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     critical,
                     position,
                     damage,
-                    surface: if target.is_none() {
+                    surface: if match damage_target {
+                        Some(hitscan::DamageTarget::Map(identity)) => self.map.is_brush_model(identity),
+                        None => impact.hit.is_none_or(|identity| self.collision.is_world(identity)),
+                        _ => false,
+                    } {
                         self.collision.impact_surface(origin, end, MASK_SHOT)?
                     } else {
                         None
@@ -5664,20 +5621,82 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 });
             }
         }
-        if let Some(group) = pending { self.apply_bullet_group(attack, group, events, &mut phase)?; }
-        for group in accumulated.into_values() { self.apply_bullet_group(attack, group, events, &mut phase)?; }
+        if let Some(group) = pending { self.apply_bullet_group(attack, group, events, &mut phase, projectile_events)?; }
         let tick = self.tick;
         self.actor_weapon_mut(owner, weapon).unwrap().hitscan.fired(tick, interval);
         Ok(phase)
     }
 
+    fn trace_hitscan(&self, owner: u32, team: PlayerTeam, start: [f32; 3], end: [f32; 3], posed: &BTreeSet<u32>)
+        -> Result<(playsrc_movement::Trace, Option<hitscan::DamageTarget>, u8), Error> {
+        use entity_queries::Entity as Q;
+        let hull = Hull { mins: [0.0; 3], maxs: [0.0; 3] };
+        let world = self.collision.trace_world(start, end, hull, MASK_SHOT)?;
+        if world.start_solid { return Ok((world, None, 0)); }
+        let mut closest = playsrc_movement::Trace { fraction: 1.0, start_solid: false, all_solid: false,
+            end: world.end, normal: None, hit: None, contents: 0 };
+        let mut selected = None;
+        let mut hitgroup = 0;
+        for entity in self.entity_queries.ray(start, world.end, 1, usize::MAX, |_| true).map_err(Error::ProjectileTrace)? {
+            if let Q::Actor(identity) = entity {
+                if identity == owner || self.projectile_target(identity).is_none_or(|actor| actor.team == team) { continue; }
+            }
+            if let Q::Projectile(identity) = entity {
+                let projectile = self.projectiles.iter().find(|projectile| projectile.presentation.identity == identity).ok_or(Error::InvalidProjectilePhysics)?;
+                if !projectile.presentation.kind.uses_rigid_physics() && projectile.presentation.owner_identity == owner { continue; }
+            }
+            let (trace, target, group) = if let Q::Actor(identity) = entity && posed.contains(&identity) {
+                let entries = self.posed_player_hitboxes.iter().filter(|hitbox| hitbox.entity == identity).map(|hitbox| playsrc_collision::StudioHitbox {
+                    identity: hitbox.hitbox, group: hitbox.group, bone: hitbox.bone, physics_bone: hitbox.physics_bone,
+                    bone_contents: hitbox.bone_contents, surface: None, minimum: hitbox.minimum, maximum: hitbox.maximum,
+                    bone_to_world: &hitbox.bone_to_world,
+                }).collect::<Vec<_>>();
+                let origin = self.posed_player_hitboxes.iter().find(|hitbox| hitbox.entity == identity).ok_or(Error::InvalidProjectilePhysics)?.origin;
+                let Some(trace) = playsrc_collision::trace_studio_hitboxes(playsrc_collision::StudioHitboxRequest {
+                    entity: u64::from(identity), origin, scale: 1.0, start, end: world.end, hull, mask: MASK_SHOT, hitboxes: &entries,
+                }).map_err(|_| Error::InvalidProjectilePhysics)? else { continue; };
+                (playsrc_movement::Trace { fraction: trace.fraction, start_solid: trace.start_solid, all_solid: trace.all_solid,
+                    end: trace.end, normal: Some(trace.normal), hit: Some(u64::from(identity)), contents: trace.contents },
+                    Some(hitscan::DamageTarget::Actor(identity)), trace.hitgroup.max(0) as u8)
+            } else {
+                let (trace, target) = self.trace_query_entity(entity, start, world.end, hull, MASK_SHOT)?;
+                (trace, target, 0)
+            };
+            if trace.all_solid || trace.start_solid || trace.fraction < closest.fraction {
+                let start_solid = closest.start_solid || trace.start_solid;
+                closest = trace;
+                closest.start_solid = start_solid;
+                selected = target;
+                hitgroup = group;
+            }
+            if closest.all_solid { break; }
+        }
+        if closest.hit.is_none() && !closest.start_solid && !closest.all_solid { return Ok((world, None, 0)); }
+        closest.fraction *= world.fraction;
+        closest.end = add(start, scale(sub(end, start), closest.fraction));
+        Ok((closest, selected, hitgroup))
+    }
+
     fn apply_bullet_group(&mut self, attack: hitscan::Attack, group: hitscan::DamageGroup,
-        events: &mut Vec<Event>, phase: &mut MapPhase) -> Result<(), Error> {
+        events: &mut Vec<Event>, phase: &mut MapPhase, projectile_events: &mut Vec<ProjectileEvent>) -> Result<(), Error> {
         let hitscan::Attack { owner, team, weapon, source: source_weapon, position: attacker_position, center: attacker_center, rules } = attack;
-        let Some(target) = self.hitscan_target(group.victim) else {
-            if let Ok(damaged) = self.map.damage(self.tick, group.victim) { phase.append(damaged); }
-            return Ok(());
+        let victim = match group.target {
+            hitscan::DamageTarget::Building(identity) => {
+                let amount = self.source_weapon_attribute(source_weapon, weapon, "mult_dmg_vs_buildings", group.amount);
+                self.buildings.damage(identity, team, amount);
+                return Ok(());
+            }
+            hitscan::DamageTarget::Projectile(identity) => {
+                self.damage_sticky(identity, team, bot::weapon_damage_type(weapon).unwrap(), group.force, group.position, projectile_events)?;
+                return Ok(());
+            }
+            hitscan::DamageTarget::Map(identity) => {
+                phase.append(self.map.damage(self.tick, identity, owner)?);
+                return Ok(());
+            }
+            hitscan::DamageTarget::Actor(identity) => identity,
         };
+        let Some(target) = self.hitscan_target(victim) else { return Ok(()); };
         let mut modifiers = damage::DamageModifiers::default();
         modifiers.critical_falloff = rules.critical_falloff;
         let push = rules.knockback && !target.knocked_back && !target.push_immune
@@ -5686,12 +5705,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let result = self.apply_actor_damage(bot::Damage {
             source_weapon, damage_type: bot::weapon_damage_type(weapon).unwrap(), force: [0.0; 3],
             crit: group.crit, range_multiplier: group.range_multiplier, custom: group.custom, modifiers, killing_weapon: None,
-            attacker: owner, victim: group.victim, weapon, amount: group.amount, position: group.position,
+            attacker: owner, victim, weapon, amount: group.amount, position: group.position,
         }, team, events)?;
         let Some(result) = result else { return Ok(()); };
-        self.apply_actor_weapon_push(group.victim, attacker_center, result.pre_resistance_base_damage + result.pre_resistance_bonus_damage, Some(rules))?;
+        self.apply_actor_weapon_push(victim, attacker_center, result.pre_resistance_base_damage + result.pre_resistance_bonus_damage, Some(rules))?;
         if push {
-            self.scattergun_push_actor(group.victim, owner, force)?;
+            self.scattergun_push_actor(victim, owner, force)?;
         }
         if !result.admitted { return Ok(()); }
         if result.death.is_some() && group.custom == damage::CustomDamage::Headshot
@@ -5703,7 +5722,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             && self.draw_random_float(RandomContext::Authority, RandomDecision::EnemySpeedOnHit, 0.0, 1.0) < rules.slow_on_hit {
             let delta = sub(target.position, attacker_position);
             let slow = hitscan::natascha_slow(dot(delta, delta));
-            self.stun_actor_movement(group.victim, owner, 0.2, slow, false)?;
+            self.stun_actor_movement(victim, owner, 0.2, slow, false)?;
         }
         Ok(())
     }
@@ -6068,65 +6087,38 @@ impl<W: GameplayWorld + Clone> Session<W> {
         pitch: f32,
         yaw: f32,
         events: &mut Vec<Event>,
-    ) -> Result<(), Error> {
-        self.resolve_melee_actor(PLAYER_IDENTITY, weapon, pitch, yaw, events)
+        projectile_events: &mut Vec<ProjectileEvent>,
+    ) -> Result<MapPhase, Error> {
+        self.resolve_melee_actor(PLAYER_IDENTITY, weapon, pitch, yaw, events, projectile_events)
     }
 
-    fn resolve_melee_actor(&mut self, owner: u32, weapon: Weapon, pitch: f32, yaw: f32, events: &mut Vec<Event>) -> Result<(), Error> {
-        let Some(attacker) = self.melee_actor(owner) else { return Ok(()); };
-        let Some(swing) = self.melee.swings.get_mut(&owner) else { return Ok(()); };
-        if !swing.pending || swing.weapon != weapon { return Ok(()); }
+    fn resolve_melee_actor(&mut self, owner: u32, weapon: Weapon, pitch: f32, yaw: f32, events: &mut Vec<Event>, projectile_events: &mut Vec<ProjectileEvent>) -> Result<MapPhase, Error> {
+        let Some(attacker) = self.melee_actor(owner) else { return Ok(MapPhase::default()); };
+        let Some(swing) = self.melee.swings.get_mut(&owner) else { return Ok(MapPhase::default()); };
+        if !swing.pending || swing.weapon != weapon { return Ok(MapPhase::default()); }
         swing.pending = false;
         let source = swing.source;
         let swing_crit = swing.crit;
         let active = if owner == PLAYER_IDENTITY { self.weapon } else { self.bots.as_ref().and_then(|bots| bots.active_weapon(owner)) };
-        if active != Some(weapon) || !self.source_weapon_is_live(source, weapon) { return Ok(()); }
+        if active != Some(weapon) || !self.source_weapon_is_live(source, weapon) { return Ok(MapPhase::default()); }
+        let mut phase = MapPhase::default();
+        let force_scale = if weapon == Weapon::Shovel {
+            if self.equipped_weapon_attribute(owner, weapon, "set_weapon_mode", 0.0).round_ties_even() == 1.0 { 160.0 } else { 1.0 }
+        } else { 80.0 };
         let potential_alive = self.melee.swings[&owner].potential_victims.iter().any(|identity| self.melee_actor(*identity).is_some());
         let (direction, _, _) = angle_vectors(pitch, yaw, 0.0);
         let origin = attacker.eye;
-        if owner == PLAYER_IDENTITY && weapon == Weapon::Wrench
-            && let Some(target) = self.buildings.nearest_wrench_target(
-                origin,
-                direction,
-                attacker.team,
-            )
-            && self.buildings.wrench(
-                target,
-                attacker.team,
-                self.tick,
-                &mut self.ammo.metal,
-            )
-        {
-            events.push(Event::MeleeImpact {
-                weapon,
-                owner,
-                target: Some(target),
-                position: origin,
-                damage: 0.0,
-            });
-            return Ok(());
-        }
         if weapon == Weapon::Wrench {
             let building_end = add(origin, scale(direction, ballistics::WRENCH_BUILDING_RANGE));
-            let building = self.collision.trace(
-                origin,
-                building_end,
-                Hull {
-                    mins: [0.0; 3],
-                    maxs: [0.0; 3],
-                },
-                MASK_SOLID,
-            )?;
-            if building.fraction >= 1.0 && !building.start_solid {
-                self.collision.trace(
-                    origin,
-                    building_end,
-                    Hull {
-                        mins: [-ballistics::MELEE_HULL_RADIUS; 3],
-                        maxs: [ballistics::MELEE_HULL_RADIUS; 3],
-                    },
-                    MASK_SOLID,
-                )?;
+            let (mut building, mut target) = self.trace_melee_scene(owner, origin, building_end, Hull { mins: [0.0; 3], maxs: [0.0; 3] }, true)?;
+            if building.fraction >= 1.0 {
+                (building, target) = self.trace_melee_scene(owner, origin, building_end, Hull { mins: [-ballistics::MELEE_HULL_RADIUS; 3], maxs: [ballistics::MELEE_HULL_RADIUS; 3] }, true)?;
+            }
+            if owner == PLAYER_IDENTITY && building.fraction < 1.0
+                && let Some(hitscan::DamageTarget::Building(target)) = target
+                && self.buildings.wrench(target, attacker.team, self.tick, &mut self.ammo.metal) {
+                events.push(Event::MeleeImpact { weapon, owner, target: Some(target), position: building.end, damage: 0.0 });
+                return Ok(phase);
             }
         }
         let range = self.equipped_weapon_attribute(owner, weapon, "melee_range_multiplier", ballistics::MELEE_RANGE);
@@ -6136,56 +6128,28 @@ impl<W: GameplayWorld + Clone> Session<W> {
             mins: [0.0; 3],
             maxs: [0.0; 3],
         };
-        let line = self.collision.trace(origin, end, line_hull, MASK_SOLID)?;
-        self.refresh_player_hitboxes()?;
-        let line_player = self.trace_melee_players(owner, origin, end, line_hull, line.fraction)?;
-        let line_actor = self.melee_player_trace(owner, origin, end, line_hull, line.fraction);
-        let (impact, player, actor) = if line.fraction < 1.0 || line.start_solid || line_player.is_some() || line_actor.is_some() {
-            (line, line_player, line_actor)
+        let (line, line_target) = self.trace_melee_scene(owner, origin, end, line_hull, false)?;
+        let (impact, damage_target) = if line.fraction < 1.0 {
+            (line, line_target)
         } else {
             let hull = Hull {
                 mins: [-radius; 3],
                 maxs: [radius; 3],
             };
-            let mut impact = self.collision.trace(origin, end, hull, MASK_SOLID)?;
-            let player = self.trace_melee_players(owner, origin, end, hull, impact.fraction)?;
-            let mut actor = self.melee_player_trace(owner, origin, end, hull, impact.fraction);
-            if impact.fraction < 1.0 && player.is_none() && actor.is_none()
-                && impact.hit.is_none_or(|identity| self.collision.is_world(identity) || u32::try_from(identity).is_ok_and(|identity| self.map.is_brush_model(identity))) {
-                (impact, actor) = self.melee_hull_intersection(owner, origin, impact)?;
+            let (mut impact, mut target) = self.trace_melee_scene(owner, origin, end, hull, false)?;
+            if impact.fraction < 1.0 && match target {
+                Some(hitscan::DamageTarget::Map(identity)) => self.map.is_brush_model(identity),
+                None => impact.hit.is_none_or(|identity| self.collision.is_world(identity)),
+                _ => false,
+            } {
+                (impact, target) = self.melee_hull_intersection(owner, origin, impact, target)?;
             }
-            (impact, player, actor)
+            (impact, target)
         };
-        let actor = actor.or_else(|| player
-            .as_ref()
-            .and_then(|hit| {
-                let identity = u32::try_from(hit.entity).ok()?;
-                self.bots
-                    .as_ref()?
-                    .contains(identity)
-                    .then_some((identity, hit.fraction, hit.end))
-            }))
-            .filter(|(_, fraction, _)| *fraction <= impact.fraction);
-        if player.is_some() || actor.is_some() || impact.fraction < 1.0 || impact.start_solid {
-            let position = actor.map_or_else(
-                || player.as_ref().map_or(impact.end, |hit| hit.end),
-                |(_, _, position)| position,
-            );
-            let target = actor
-                .map(|(identity, _, _)| identity)
-                .or_else(|| {
-                    player
-                        .as_ref()
-                        .and_then(|hit| u32::try_from(hit.entity).ok())
-                })
-                .or_else(|| {
-                    impact
-                        .hit
-                        .filter(|identity| !self.collision.is_world(*identity))
-                        .and_then(|identity| u32::try_from(identity).ok())
-                });
-
-            let flesh = actor.is_some() || player.is_some();
+        if impact.fraction < 1.0 {
+            let position = impact.end;
+            let target = damage_target.map(hitscan::DamageTarget::identity);
+            let flesh = matches!(damage_target, Some(hitscan::DamageTarget::Actor(_)));
             let (definition, damage) = match (weapon, flesh) {
                 (Weapon::Bat, true) => (SoundDefinition::BatHitFlesh, ballistics::BAT_DAMAGE),
                 (Weapon::Bat, false) => (SoundDefinition::BatHitWorld, ballistics::BAT_DAMAGE),
@@ -6239,7 +6203,15 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 position,
                 damage,
             });
-            if let Some(victim) = actor.map(|(identity, _, _)| identity) {
+            let force = melee::impact_force(damage, direction, force_scale).map_err(|_| Error::InvalidProjectilePhysics)?;
+            if let Some(hitscan::DamageTarget::Projectile(identity)) = damage_target {
+                self.damage_sticky(identity, attacker.team, damage::DamageType::MELEE | damage::DamageType::CLUB | damage::DamageType::NEVER_GIB, force, position, projectile_events)?;
+            } else if let Some(hitscan::DamageTarget::Building(identity)) = damage_target {
+                let amount = self.source_weapon_attribute(Some(source), weapon, "mult_dmg_vs_buildings", damage);
+                self.buildings.damage(identity, attacker.team, amount);
+            } else if let Some(hitscan::DamageTarget::Map(identity)) = damage_target {
+                phase.append(self.map.damage(self.tick, identity, owner)?);
+            } else if let Some(hitscan::DamageTarget::Actor(victim)) = damage_target {
                 let crit = if self.has_combat_condition(owner, condition::ConditionId::BLAST_JUMPING)
                     && self.equipped_weapon_attribute(owner, weapon, "crit_while_airborne", 0.0) != 0.0 {
                     damage::CritKind::Full
@@ -6247,7 +6219,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 let result = self.apply_actor_damage(
                     bot::Damage {
                         source_weapon: Some(source),
-                        force: melee::impact_force(weapon, damage, direction),
+                        force,
                         attacker: owner,
                         victim,
                         weapon,
@@ -6269,7 +6241,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             let amount = self.melee_damage(owner, weapon, if weapon == Weapon::Bat { 35.0 } else { 65.0 }) * 0.5;
             let result = self.apply_actor_damage(bot::Damage {
                 source_weapon: Some(source),
-                attacker: owner, victim: owner, weapon, amount, position: attacker.position, force: melee::impact_force(weapon, amount, direction),
+                attacker: owner, victim: owner, weapon, amount, position: attacker.position, force: melee::impact_force(amount, direction, force_scale).map_err(|_| Error::InvalidProjectilePhysics)?,
                 crit: swing_crit, range_multiplier: 1.0, custom: damage::CustomDamage::None,
                 modifiers: damage::DamageModifiers::default(),
                 damage_type: damage::DamageType::MELEE | damage::DamageType::CLUB | damage::DamageType::NEVER_GIB,
@@ -6278,7 +6250,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             if let Some(result) = result { self.melee_hit_effects(owner, owner, weapon, &result)?; }
         }
 
-        Ok(())
+        Ok(phase)
     }
 
     fn resolve_knife(
@@ -6286,85 +6258,29 @@ impl<W: GameplayWorld + Clone> Session<W> {
         pitch: f32,
         yaw: f32,
         events: &mut Vec<Event>,
-    ) -> Result<(), Error> {
+        projectile_events: &mut Vec<ProjectileEvent>,
+    ) -> Result<MapPhase, Error> {
+        let mut phase = MapPhase::default();
         let (direction, _, _) = angle_vectors(pitch, yaw, 0.0);
         let origin = add(self.movement.position, self.movement.view_offset);
-        let end = add(origin, scale(direction, ballistics::MELEE_RANGE));
-        let line = self.collision.trace(
-            origin,
-            end,
-            Hull {
-                mins: [0.0; 3],
-                maxs: [0.0; 3],
-            },
-            MASK_SOLID,
-        )?;
-        let impact = if line.fraction < 1.0 || line.start_solid {
-            line
-        } else {
-            self.collision.trace(
-                origin,
-                end,
-                Hull {
-                    mins: [-ballistics::MELEE_HULL_RADIUS; 3],
-                    maxs: [ballistics::MELEE_HULL_RADIUS; 3],
-                },
-                MASK_SOLID,
-            )?
-        };
-        let mut player_hit: Option<playsrc_collision::StudioHitboxTrace> = None;
-        for candidate in &self.posed_player_hitboxes {
-            if !candidate.team.is_enemy(self.team_selection.local_team()) {
-                continue;
-            }
-            let hitbox = playsrc_collision::StudioHitbox {
-                identity: candidate.hitbox,
-                group: candidate.group,
-                bone: candidate.bone,
-                physics_bone: candidate.physics_bone,
-                bone_contents: candidate.bone_contents,
-                surface: None,
-                minimum: candidate.minimum,
-                maximum: candidate.maximum,
-                bone_to_world: &candidate.bone_to_world,
-            };
-            let hit =
-                playsrc_collision::trace_studio_hitboxes(playsrc_collision::StudioHitboxRequest {
-                    entity: u64::from(candidate.entity),
-                    origin: candidate.origin,
-                    scale: 1.0,
-                    start: origin,
-                    end,
-                    hull: Hull {
-                        mins: [-ballistics::MELEE_HULL_RADIUS; 3],
-                        maxs: [ballistics::MELEE_HULL_RADIUS; 3],
-                    },
-                    mask: MASK_SHOT,
-                    hitboxes: std::slice::from_ref(&hitbox),
-                })
-                .map_err(|_| Error::InvalidProjectilePhysics)?;
-            if let Some(hit) = hit
-                && hit.fraction <= impact.fraction
-                && player_hit
-                    .as_ref()
-                    .is_none_or(|prior| hit.fraction < prior.fraction)
-            {
-                player_hit = Some(hit);
-            }
+        let range = self.equipped_weapon_attribute(PLAYER_IDENTITY, Weapon::Knife, "melee_range_multiplier", ballistics::MELEE_RANGE);
+        let radius = self.equipped_weapon_attribute(PLAYER_IDENTITY, Weapon::Knife, "melee_bounds_multiplier", ballistics::MELEE_HULL_RADIUS);
+        let end = add(origin, scale(direction, range));
+        let (mut impact, mut damage_target) = self.trace_melee_scene(PLAYER_IDENTITY, origin, end, Hull { mins: [0.0; 3], maxs: [0.0; 3] }, false)?;
+        if impact.fraction >= 1.0 {
+            (impact, damage_target) = self.trace_melee_scene(PLAYER_IDENTITY, origin, end, Hull { mins: [-radius; 3], maxs: [radius; 3] }, false)?;
+            if impact.fraction < 1.0 && match damage_target {
+                Some(hitscan::DamageTarget::Map(identity)) => self.map.is_brush_model(identity),
+                None => impact.hit.is_none_or(|identity| self.collision.is_world(identity)),
+                _ => false,
+            } { (impact, damage_target) = self.melee_hull_intersection(PLAYER_IDENTITY, origin, impact, damage_target)?; }
         }
         self.emit_weapon_sound(SoundDefinition::KnifeMiss, self.movement.position);
-        if player_hit.is_some() || impact.fraction < 1.0 || impact.start_solid {
-            let target = player_hit
-                .as_ref()
-                .and_then(|hit| u32::try_from(hit.entity).ok())
-                .or_else(|| {
-                    impact
-                        .hit
-                        .filter(|identity| !self.collision.is_world(*identity))
-                        .and_then(|identity| u32::try_from(identity).ok())
-                });
-            let position = player_hit.as_ref().map_or(impact.end, |hit| hit.end);
-            let facts = target.and_then(|identity| {
+        if impact.fraction < 1.0 {
+            let target = damage_target.map(hitscan::DamageTarget::identity);
+            let position = impact.end;
+            let actor = match damage_target { Some(hitscan::DamageTarget::Actor(identity)) => Some(identity), _ => None };
+            let facts = actor.and_then(|identity| {
                 self.bots
                     .as_ref()
                     .and_then(|bots| bots.combat_player(identity))
@@ -6385,19 +6301,28 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     spy::backstab_damage(facts.health)
                 });
             self.emit_weapon_sound(
-                if target.is_some() {
+                if actor.is_some() {
                     SoundDefinition::KnifeHitFlesh
                 } else {
                     SoundDefinition::KnifeHitWorld
                 },
                 position,
             );
-            if let Some(identity) = target {
+            let force = melee::impact_force(if backstab.is_some() { damage / 3.0 } else { damage }, direction, 80.0).map_err(|_| Error::InvalidProjectilePhysics)?;
+            if let Some(hitscan::DamageTarget::Projectile(identity)) = damage_target {
+                self.damage_sticky(identity, self.team_selection.local_team(), bot::weapon_damage_type(Weapon::Knife).unwrap(), force, position, projectile_events)?;
+            } else if let Some(hitscan::DamageTarget::Building(identity)) = damage_target {
+                let source = self.weapon_source(PLAYER_IDENTITY, Weapon::Knife);
+                let amount = self.source_weapon_attribute(source, Weapon::Knife, "mult_dmg_vs_buildings", damage);
+                self.buildings.damage(identity, self.team_selection.local_team(), amount);
+            } else if let Some(hitscan::DamageTarget::Map(identity)) = damage_target {
+                phase.append(self.map.damage(self.tick, identity, PLAYER_IDENTITY)?);
+            } else if let Some(identity) = actor {
                 self.apply_actor_damage(
                     bot::Damage {
                         source_weapon: self.weapon_source(PLAYER_IDENTITY, Weapon::Knife),
                         damage_type: bot::weapon_damage_type(Weapon::Knife).unwrap(),
-                        force: [0.0; 3], range_multiplier: 1.0,
+                        force, range_multiplier: 1.0,
                         crit: if backstab.is_some() { damage::CritKind::Full } else { damage::CritKind::None },
                         custom: if backstab.is_some() { damage::CustomDamage::Backstab } else { damage::CustomDamage::None },
                         modifiers: damage::DamageModifiers::default(), killing_weapon: None,
@@ -6420,67 +6345,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
             });
         }
         self.remove_spy_disguise();
-        Ok(())
-    }
-
-    fn trace_melee_players(
-        &self,
-        owner: u32,
-        start: [f32; 3],
-        end: [f32; 3],
-        hull: Hull,
-        maximum_fraction: f32,
-    ) -> Result<Option<playsrc_collision::StudioHitboxTrace>, Error> {
-        let mut nearest: Option<playsrc_collision::StudioHitboxTrace> = None;
-        for candidate in &self.posed_player_hitboxes {
-            if candidate.entity == owner || candidate.entity == PLAYER_IDENTITY || self.bots.as_ref().is_some_and(|bots| bots.contains(candidate.entity)) {
-                continue;
-            }
-            let hitbox = playsrc_collision::StudioHitbox {
-                identity: candidate.hitbox,
-                group: candidate.group,
-                bone: candidate.bone,
-                physics_bone: candidate.physics_bone,
-                bone_contents: candidate.bone_contents,
-                surface: None,
-                minimum: candidate.minimum,
-                maximum: candidate.maximum,
-                bone_to_world: &candidate.bone_to_world,
-            };
-            let trace =
-                playsrc_collision::trace_studio_hitboxes(playsrc_collision::StudioHitboxRequest {
-                    entity: u64::from(candidate.entity),
-                    origin: candidate.origin,
-                    scale: 1.0,
-                    start,
-                    end,
-                    hull,
-                    mask: MASK_SOLID,
-                    hitboxes: std::slice::from_ref(&hitbox),
-                })
-                .map_err(|_| Error::InvalidProjectilePhysics)?;
-            if let Some(trace) = trace
-                && trace.fraction <= maximum_fraction
-                && nearest
-                    .as_ref()
-                    .is_none_or(|previous| trace.fraction < previous.fraction)
-            {
-                nearest = Some(trace);
-            }
-        }
-        Ok(nearest)
-    }
-
-    fn smack_fists(&mut self, pitch: f32, yaw: f32, events: &mut Vec<Event>) -> Result<MapPhase, Error> {
-        let start = events.len();
-        self.resolve_melee(Weapon::Fists, pitch, yaw, events)?;
-        let mut phase = MapPhase::default();
-        for event in &events[start..] {
-            if let Event::MeleeImpact { target: Some(target), .. } = event
-                && !self.bots.as_ref().is_some_and(|bots| bots.contains(*target))
-                && let Ok(damage) = self.map.damage(self.tick, *target) { phase.append(damage); }
-        }
         Ok(phase)
+    }
+
+    fn smack_fists(&mut self, pitch: f32, yaw: f32, events: &mut Vec<Event>, projectile_events: &mut Vec<ProjectileEvent>) -> Result<MapPhase, Error> {
+        self.resolve_melee(Weapon::Fists, pitch, yaw, events, projectile_events)
     }
 
     fn fire_projectile(
@@ -6520,6 +6389,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             Weapon::RocketLauncher => SoundDefinition::RocketSingle,
             Weapon::Original => SoundDefinition::OriginalSingle,
             Weapon::StickybombLauncher => SoundDefinition::StickySingle,
+            Weapon::GrenadeLauncher => SoundDefinition::GrenadeSingle,
             Weapon::Scattergun
             | Weapon::HandgunScoutPrimary
             | Weapon::Pistol
@@ -6533,7 +6403,6 @@ impl<W: GameplayWorld + Clone> Session<W> {
             | Weapon::Smg
             | Weapon::Kukri
             | Weapon::Bottle
-            | Weapon::GrenadeLauncher
             | Weapon::EngineerShotgun
             | Weapon::EngineerPistol
             | Weapon::Wrench
@@ -6562,6 +6431,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 Weapon::FlareGun | Weapon::Detonator => SoundDefinition::FlareCrit,
                 Weapon::ScorchShot => SoundDefinition::ScorchShotCrit,
                 Weapon::Manmelter => SoundDefinition::ManmelterCrit,
+                Weapon::GrenadeLauncher => SoundDefinition::GrenadeCritical,
                 _ => definition,
             }
         } else { definition };
@@ -6586,6 +6456,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             | Weapon::LibertyLauncher | Weapon::RocketJumper | Weapon::AirStrike => ProjectileKind::Rocket,
             Weapon::FlareGun | Weapon::Detonator | Weapon::ScorchShot | Weapon::Manmelter => ProjectileKind::Flare,
             Weapon::StickybombLauncher => ProjectileKind::Sticky,
+            Weapon::GrenadeLauncher => ProjectileKind::Grenade,
             Weapon::Scattergun
             | Weapon::HandgunScoutPrimary
             | Weapon::Pistol
@@ -6599,7 +6470,6 @@ impl<W: GameplayWorld + Clone> Session<W> {
             | Weapon::Smg
             | Weapon::Kukri
             | Weapon::Bottle
-            | Weapon::GrenadeLauncher
             | Weapon::EngineerShotgun
             | Weapon::EngineerPistol
             | Weapon::Wrench
@@ -6622,7 +6492,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             || weapon::WeaponProfile::configured(weapon), |runtime| runtime.profile());
         let (mut direction, right, up) = angle_vectors(pitch, yaw, 0.0);
         let viewmodel_flipped = profile.flip_viewmodel != self.flip_viewmodels;
-        let (position, orientation) = if kind == ProjectileKind::Sticky {
+        let (position, orientation) = if kind.uses_rigid_physics() {
             let right_offset = if viewmodel_flipped { -8.0 } else { 8.0 };
             let position = add(
                 add(add(eye, scale(direction, 16.0)), scale(right, right_offset)),
@@ -6710,7 +6580,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 (clipped.end, quaternion_from_direction(direction))
             }
         };
-        let (velocity, angular_velocity) = if kind == ProjectileKind::Sticky {
+        let (velocity, angular_velocity) = if kind.uses_rigid_physics() {
             let random = StickyLaunchRandom {
                 right_velocity: self.draw_random_float(
                     RandomContext::Authority,
@@ -6734,7 +6604,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             if !random.validate() || expected_sticky_random.is_some_and(|value| value != random) {
                 return Err(Error::InvalidStickyLaunchRandom);
             }
-            let speed = remap_clamped(charge_seconds, 0.0, 4.0, 900.0, 2400.0);
+            let speed = if kind==ProjectileKind::Grenade {1200.0}else{remap_clamped(charge_seconds, 0.0, 4.0, 900.0, 2400.0)};
             (
                 add(
                     add(
@@ -6761,7 +6631,22 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let identity = self.next_projectile;
         self.next_projectile = self.next_projectile.wrapping_add(1).max(1);
         let tick_interval = self.movement_configuration.tick_interval;
+        let full_damage=self.equipped_weapon_attribute(owner,weapon,"mult_dmg",match kind {
+            ProjectileKind::Rocket=>90.0,ProjectileKind::Sticky=>120.0,ProjectileKind::Grenade=>100.0,ProjectileKind::Syringe=>medic::SYRINGE_DAMAGE as f32,ProjectileKind::Flare=>30.0,
+        });
         let mut projectile = LiveProjectile {
+            retiring:false,solid:true,launcher_linked:kind==ProjectileKind::Sticky,
+            prearm_think_tick:(kind==ProjectileKind::Sticky).then_some(source_think_tick(self.tick,0.001,tick_interval)),
+            server_arm_think_tick:None,teammate_collision_enabled:false,
+            rigid_entity_velocity:[0.0;3],
+            full_damage,
+            detonate_time:(kind==ProjectileKind::Grenade).then_some(self.tick as f32*tick_interval+2.0),
+            deflect_owner: None,
+            deflected_until: None,
+            minimum_sleep_time:0.0,
+            touched_time:None,
+            in_solid:false,
+            teammate_collision_tick:source_think_tick(self.tick,0.25,tick_interval),
             killing_weapon: self.killing_weapon_name(owner, weapon),
             presentation: Projectile {
                 air_burst: false,
@@ -6779,12 +6664,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 deflected: false,
                 original_owner_identity: owner,
                 self_blast_only: false,
-                damage: self.equipped_weapon_attribute(owner, weapon, "mult_dmg", match kind {
-                    ProjectileKind::Rocket => 90.0,
-                    ProjectileKind::Sticky => 120.0,
-                    ProjectileKind::Syringe => medic::SYRINGE_DAMAGE as f32,
-                    ProjectileKind::Flare => 30.0,
-                }),
+                damage:if kind==ProjectileKind::Grenade {(f64::from(full_damage)*0.6) as f32}else{full_damage},
                 kind,
                 team,
                 owner_identity: owner,
@@ -6809,12 +6689,15 @@ impl<W: GameplayWorld + Clone> Session<W> {
             flare_angles: [pitch, yaw, 0.0],
             armed: false,
             creation_tick: self.tick,
-            arm_tick: self.tick.saturating_add(ticks(0.8, tick_interval)),
-            next_think_tick: self.tick.saturating_add(ticks(0.2, tick_interval)),
-            forced_detonate_tick: None,
+            next_think_tick: source_think_tick(self.tick,0.2,tick_interval),
+            detonate_on_think: false,
             motion_enabled: true,
             direct_target: None,
         };
+        let query_entity = entity_queries::Entity::Projectile(identity);
+        self.entity_queries.register(query_entity).map_err(Error::ProjectileTrace)?;
+        self.entity_queries.bind_bounds(query_entity, position, kind.entity_hull(), None).map_err(Error::ProjectileTrace)?;
+        self.entity_queries.set_lists(query_entity, 0x11).map_err(Error::ProjectileTrace)?;
         projectile.presentation.trail = self.projectile_trail(&projectile.presentation)?;
         let mut fire = projectile_event(
             ProjectileEventKind::Fire,
@@ -6826,117 +6709,28 @@ impl<W: GameplayWorld + Clone> Session<W> {
             view_orientation: quaternion_from_angles(pitch, yaw, 0.0),
         });
         projectile_events.push(fire);
+        if kind.uses_rigid_physics() {
+            self.create_rigid_projectile(&projectile.presentation,[pitch,yaw,0.0])?;
+        }
         if kind == ProjectileKind::Sticky {
-            self.physics_requests.push(sticky_physics_request(
-                ProjectilePhysicsOperation::Create,
-                &projectile,
-                self.tick,
-            ));
             let sticky_count = self
                 .projectiles
                 .iter()
-                .filter(|value| value.presentation.kind == ProjectileKind::Sticky)
+                .filter(|value| value.launcher_linked && value.same_launcher(&projectile))
                 .count();
             if sticky_count >= 8
                 && let Some(oldest) = self
                     .projectiles
                     .iter_mut()
-                    .find(|value| value.presentation.kind == ProjectileKind::Sticky)
+                    .find(|value| value.launcher_linked && value.same_launcher(&projectile))
             {
-                oldest.forced_detonate_tick = Some(self.tick);
+                oldest.launcher_linked=false;
+                oldest.detonate_time=Some(self.tick as f32*tick_interval);
             }
         }
         self.projectiles.push(projectile);
         if owner == PLAYER_IDENTITY && weapon == Weapon::Manmelter {
             self.set_revenge_crits(self.revenge_crits - 1);
-        }
-        Ok(())
-    }
-
-    fn apply_projectile_physics(
-        &mut self,
-        expected: &[ProjectilePhysicsRequest],
-        results: &[ProjectilePhysicsResult],
-        projectile_events: &mut Vec<ProjectileEvent>,
-    ) -> Result<(), Error> {
-        if results.len() != expected.len() {
-            return Err(Error::InvalidProjectilePhysics);
-        }
-        for (request, result) in expected.iter().zip(results) {
-            if result.tick != self.tick
-                || request.tick.checked_add(1) != Some(result.tick)
-                || result.projectile != request.projectile
-                || !result.motion_enabled
-                || result
-                    .position
-                    .into_iter()
-                    .chain(result.velocity)
-                    .chain(result.orientation)
-                    .chain(result.angular_velocity)
-                    .any(|value| !value.is_finite())
-                || result.contact.is_some_and(|contact| {
-                    contact.normal.into_iter().any(|value| !value.is_finite())
-                        || length(contact.normal) <= f32::EPSILON
-                })
-                || (quaternion_length(result.orientation) - 1.0).abs() > 0.001
-            {
-                return Err(Error::InvalidProjectilePhysics);
-            }
-            let Some(index) = self.projectiles.iter().position(|projectile| {
-                projectile.presentation.identity == result.projectile
-                    && projectile.presentation.kind == ProjectileKind::Sticky
-                    && projectile.presentation.state == ProjectileState::Flying
-            }) else {
-                return Err(Error::InvalidProjectilePhysics);
-            };
-            let mut disable = false;
-            let detonatable =
-                self.tick
-                    .saturating_sub(self.projectiles[index].creation_tick) as f32
-                    * self.movement_configuration.tick_interval
-                    >= 0.8;
-            {
-                let projectile = &mut self.projectiles[index];
-                projectile.presentation.position = result.position;
-                projectile.presentation.velocity = result.velocity;
-                projectile.presentation.orientation = result.orientation;
-                projectile.presentation.angular_velocity = result.angular_velocity;
-                projectile.motion_enabled = result.motion_enabled;
-                if let Some(contact) = result.contact {
-                    let normal = normalized(contact.normal);
-                    projectile_events.push(projectile_event_with_contact(
-                        ProjectileEventKind::Impact,
-                        &projectile.presentation,
-                        self.tick,
-                        Some(normal),
-                    ));
-                    if matches!(
-                        contact.kind,
-                        ProjectileContactKind::World | ProjectileContactKind::DynamicProp
-                    ) {
-                        projectile.presentation.contact_normal = Some(normal);
-                        projectile.motion_enabled = false;
-                        projectile.presentation.state = if projectile.armed || detonatable {
-                            ProjectileState::StuckArmed
-                        } else {
-                            ProjectileState::StuckUnarmed
-                        };
-                        projectile_events.push(projectile_event(
-                            ProjectileEventKind::Stick,
-                            &projectile.presentation,
-                            self.tick,
-                        ));
-                        disable = true;
-                    }
-                }
-            }
-            if disable {
-                self.physics_requests.push(sticky_physics_request(
-                    ProjectilePhysicsOperation::DisableMotion,
-                    &self.projectiles[index],
-                    self.tick,
-                ));
-            }
         }
         Ok(())
     }
@@ -7026,11 +6820,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 result.direct_target = Some(identity);
                 result.normal = Some(scale(normalized(projectile.presentation.velocity), -1.0));
             }
-            projectile.presentation.position = result.end;
+            self.entity_queries.set_origin(entity_queries::Entity::Projectile(projectile.presentation.identity), &mut projectile.presentation.position, result.end).map_err(Error::ProjectileTrace)?;
             if !projectile.flare_debris || projectile.direct_target.is_none() {
                 projectile.direct_target = result.direct_target;
             }
             if result.sky {
+                self.entity_queries.destroy(entity_queries::Entity::Projectile(projectile.presentation.identity)).map_err(Error::ProjectileTrace)?;
                 projectile_events.push(projectile_event(
                     ProjectileEventKind::Fizzle,
                     &projectile.presentation,
@@ -7040,9 +6835,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
             }
             if result.solid {
                 let normal = normalized(result.normal.expect("validated solid normal"));
-                projectile.presentation.position = if projectile.presentation.kind == ProjectileKind::Flare {
+                let position = if projectile.presentation.kind == ProjectileKind::Flare {
                     result.end
                 } else { add(result.end, scale(normal, 1.0)) };
+                self.entity_queries.set_origin(entity_queries::Entity::Projectile(projectile.presentation.identity), &mut projectile.presentation.position, position).map_err(Error::ProjectileTrace)?;
                 projectile.presentation.contact_normal = Some(normal);
                 projectile_events.push(projectile_event(
                     ProjectileEventKind::Impact,
@@ -7054,14 +6850,15 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         && target != PLAYER_IDENTITY
                         && !self.bots.as_ref().is_some_and(|bots| bots.contains(target))
                         && projectile.presentation.damage > 0.0 {
-                        map_phase.append(self.map.damage(self.tick, target)?);
+                        map_phase.append(self.map.damage(self.tick, target, projectile.presentation.owner_identity)?);
                     }
-                    if let Some(retained) = self.flare_touch(projectile, result.direct_target, projectile_events, events)? {
+                    if let Some(retained) = self.flare_touch(projectile, result.direct_target, projectile_events, events, &mut map_phase)? {
                         self.projectiles.push(retained);
                     }
                     continue;
                 }
                 if projectile.presentation.kind == ProjectileKind::Syringe {
+                    self.entity_queries.destroy(entity_queries::Entity::Projectile(projectile.presentation.identity)).map_err(Error::ProjectileTrace)?;
                     projectile_events.push(projectile_event(
                         ProjectileEventKind::Fizzle,
                         &projectile.presentation,
@@ -7085,22 +6882,16 @@ impl<W: GameplayWorld + Clone> Session<W> {
                                 events,
                             )?;
                         } else {
-                            map_phase.append(self.map.damage(self.tick, target)?);
+                            map_phase.append(self.map.damage(self.tick, target, projectile.presentation.owner_identity)?);
                         }
                     }
                     continue;
                 }
                 if let Some(target) = result.direct_target {
-                    let deals_damage = projectile.presentation.damage > 0.0;
-                    let (presentation, killing_weapon) = self.publish_explosion(projectile, projectile_events)?;
-                    if deals_damage && target != PLAYER_IDENTITY
-                        && !self.bots.as_ref().is_some_and(|bots| bots.contains(target))
-                    {
-                        map_phase.append(self.map.damage(self.tick, target)?);
-                    }
-                    self.apply_blast(&presentation, killing_weapon, Some(target), events)?;
+                    let (presentation, killing_weapon) = self.publish_explosion(&mut projectile, projectile_events)?;
+                    map_phase.append(self.apply_blast(&presentation, killing_weapon, Some(target), events, projectile_events)?);
                 } else {
-                    self.explode(projectile, projectile_events, events)?;
+                    map_phase.append(self.explode(projectile, projectile_events, events)?);
                 }
             } else {
                 self.projectiles.push(projectile);
@@ -7114,13 +6905,24 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.push_audio_event(AudioEvent {
             action: AudioAction::Play, tick: self.tick, ordinal: 0,
             identity: AudioEventIdentity::ExplosionSpecial1, definition,
-            source_kind: AudioSourceKind::Entity, source_identity: projectile.identity,
+            source_kind: AudioSourceKind::Projectile, source_identity: projectile.identity,
             owner_identity: Some(projectile.owner_identity), position: projectile.position, samples,
         });
     }
 
+    fn emit_deflection_sound(&mut self, identity: u32) -> Result<(), Error> {
+        let projectile = self.projectiles.iter().find(|projectile| projectile.presentation.identity == identity).ok_or(Error::InvalidProjectilePhysics)?;
+        let (position, owner) = (projectile.presentation.position, projectile.presentation.owner_identity);
+        let definition = SoundDefinition::FlameDeflect;
+        let samples = self.sample_sound(RandomContext::Authority, definition, SoundQueryPhase::Emit);
+        self.push_audio_event(AudioEvent { action: AudioAction::Play, tick: self.tick, ordinal: 0,
+            identity: AudioEventIdentity::WeaponSingle, definition, source_kind: AudioSourceKind::Projectile,
+            source_identity: identity, owner_identity: Some(owner), position, samples });
+        Ok(())
+    }
+
     fn flare_touch(&mut self, mut projectile: LiveProjectile, target: Option<u32>,
-        projectile_events: &mut Vec<ProjectileEvent>, events: &mut Vec<Event>) -> Result<Option<LiveProjectile>, Error> {
+        projectile_events: &mut Vec<ProjectileEvent>, events: &mut Vec<Event>, phase: &mut MapPhase) -> Result<Option<LiveProjectile>, Error> {
         let now = self.tick as f32 * self.movement_configuration.tick_interval;
         let victim = target.and_then(|identity| self.projectile_target(identity));
         let kind = self.flare_type(&projectile.presentation);
@@ -7131,7 +6933,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             victim.is_some_and(|victim| victim.condition(115)), projectile.presentation.velocity);
         if let Some(victim) = victim {
             self.apply_projectile_damage(&projectile.presentation, projectile.killing_weapon, victim.identity,
-                projectile.presentation.damage, matches!(outcome, projectile_weapon::FlareImpact::Bounce { .. }), false, events)?;
+                projectile.presentation.damage, matches!(outcome, projectile_weapon::FlareImpact::Bounce { .. }), false, [0.0; 3], events)?;
         }
         match outcome {
             projectile_weapon::FlareImpact::Bounce { push, stun, velocity } => {
@@ -7174,16 +6976,19 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 Ok(Some(projectile))
             }
             projectile_weapon::FlareImpact::Remove => {
+                self.entity_queries.destroy(entity_queries::Entity::Projectile(projectile.presentation.identity)).map_err(Error::ProjectileTrace)?;
                 self.emit_projectile_sound(SoundDefinition::FlarePlayerImpact, &projectile.presentation);
                 projectile_events.push(projectile_event(ProjectileEventKind::Fizzle, &projectile.presentation, self.tick));
                 Ok(None)
             }
             projectile_weapon::FlareImpact::Detonate { self_only } => {
                 projectile.presentation.self_blast_only = self_only;
-                self.explode(projectile, projectile_events, events)?;
+                phase.append(self.explode(projectile, projectile_events, events)?);
                 Ok(None)
             }
             projectile_weapon::FlareImpact::Embed { effect_due } => {
+                projectile.solid = false;
+                self.entity_queries.set_solid(entity_queries::Entity::Projectile(projectile.presentation.identity), false).map_err(Error::ProjectileTrace)?;
                 projectile.motion_enabled = false;
                 projectile.presentation.velocity = [0.0; 3];
                 projectile.flare_impact_time = Some(effect_due);
@@ -7196,16 +7001,32 @@ impl<W: GameplayWorld + Clone> Session<W> {
     fn advance_projectiles(
         &mut self,
         tick_interval: f32,
+        rigid_thinks: &[u32],
         projectile_events: &mut Vec<ProjectileEvent>,
         events: &mut Vec<Event>,
-    ) -> Result<(), Error> {
-        let mut retained = Vec::new();
-        for mut projectile in std::mem::take(&mut self.projectiles) {
+    ) -> Result<MapPhase, Error> {
+        let mut phase = MapPhase::default();
+        let roster=self.projectiles.iter().map(|projectile|projectile.presentation.identity).collect::<Vec<_>>();
+        for identity in roster {
+            let Some(index)=self.projectiles.iter().position(|value|value.presentation.identity==identity) else {continue;};
+            let mut projectile=self.projectiles.remove(index);
+            let rigid_think=rigid_thinks.contains(&identity);
+            if projectile.retiring {
+                if rigid_think && projectile.next_think_tick>0 && projectile.next_think_tick<=self.tick {
+                    if projectile.detonate_on_think {
+                        projectile.detonate_on_think=false;
+                        projectile.next_think_tick=self.tick;
+                        projectile.advance_rigid_contexts(self.tick,tick_interval);
+                        self.projectiles.insert(index,projectile);
+                    }else {self.destroy_rigid_projectile(identity)?;}
+                }else {if rigid_think {projectile.advance_rigid_contexts(self.tick,tick_interval);}self.projectiles.insert(index,projectile);}
+                continue;
+            }
             projectile.presentation.age_seconds =
-                self.tick.saturating_sub(projectile.creation_tick) as f32 * tick_interval;
+                self.tick as f32*tick_interval-projectile.creation_tick as f32*tick_interval;
             projectile.presentation.model_visible = projectile.presentation.age_seconds >= match projectile.presentation.kind {
                 ProjectileKind::Rocket | ProjectileKind::Flare => 0.2,
-                ProjectileKind::Sticky => 0.1,
+                ProjectileKind::Sticky | ProjectileKind::Grenade => 0.1,
                 ProjectileKind::Syringe => 0.0,
             };
             if let Some(impact_time) = projectile.flare_impact_time {
@@ -7213,16 +7034,17 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     if self.tick as f32 * tick_interval > impact_time {
                         self.emit_projectile_sound(SoundDefinition::FlareExplosion, &projectile.presentation);
                         projectile_events.push(projectile_event(ProjectileEventKind::Explode, &projectile.presentation, self.tick));
+                        self.entity_queries.destroy(entity_queries::Entity::Projectile(identity)).map_err(Error::ProjectileTrace)?;
                         continue;
                     }
                     projectile.next_think_tick = weapon::source_deadline_tick(self.tick, 0.1, tick_interval);
                 }
-                retained.push(projectile);
+                self.projectiles.insert(index,projectile);
                 continue;
             }
             if projectile.presentation.kind == ProjectileKind::Sticky
                 && !projectile.armed
-                && self.tick >= projectile.arm_tick
+                && projectile.presentation.age_seconds>=0.8
             {
                 projectile.armed = true;
                 if projectile.presentation.state == ProjectileState::StuckUnarmed {
@@ -7234,36 +7056,31 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     self.tick,
                 ));
             }
-            if projectile.presentation.kind == ProjectileKind::Sticky {
-                let think_due = self.tick >= projectile.next_think_tick;
+            if projectile.presentation.kind.uses_rigid_physics() {
+                let think_due = rigid_think && projectile.next_think_tick>0 && self.tick >= projectile.next_think_tick;
                 if think_due {
-                    projectile.next_think_tick = self
-                        .tick
-                        .saturating_add(ticks(0.2, self.movement_configuration.tick_interval));
+                    projectile.next_think_tick = source_think_tick(self.tick,0.2,self.movement_configuration.tick_interval);
+                    if projectile.presentation.kind == ProjectileKind::Sticky
+                        && projectile.deflected_until.is_some_and(|deadline| deadline <= self.tick as f32 * tick_interval) {
+                        projectile.presentation.deflected = false;
+                        projectile.deflect_owner = None;
+                        projectile.deflected_until = None;
+                    }
                 }
                 if think_due
-                    && projectile
-                        .forced_detonate_tick
-                        .is_some_and(|detonate| self.tick > detonate)
+                    && (projectile.detonate_on_think
+                        || projectile.detonate_time.is_some_and(|deadline|self.tick as f32*tick_interval>deadline))
                 {
-                    self.explode(projectile, projectile_events, events)?;
+                    phase.append(self.detonate_grenade(projectile, projectile_events, events)?);
+                    if let Some(projectile)=self.projectiles.iter_mut().find(|value|value.presentation.identity==identity) {projectile.advance_rigid_contexts(self.tick,tick_interval);}
                     continue;
                 }
-                if projectile.presentation.state == ProjectileState::Flying
-                    && projectile.motion_enabled
-                    && projectile.creation_tick < self.tick
-                {
-                    self.physics_requests.push(sticky_physics_request(
-                        ProjectilePhysicsOperation::Step,
-                        &projectile,
-                        self.tick,
-                    ));
-                }
-                retained.push(projectile);
+                if rigid_think {projectile.advance_rigid_contexts(self.tick,tick_interval);}
+                self.projectiles.insert(index,projectile);
                 continue;
             }
             if projectile.presentation.state != ProjectileState::Flying {
-                retained.push(projectile);
+                self.projectiles.insert(index,projectile);
                 continue;
             }
             if projectile.presentation.kind == ProjectileKind::Flare {
@@ -7280,7 +7097,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     start: projectile.presentation.position, end,
                     mask: rocket_flight_mask(projectile.presentation.team),
                 });
-                retained.push(projectile);
+                self.projectiles.insert(index,projectile);
                 continue;
             }
             let end = add(
@@ -7301,47 +7118,69 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 end,
                 mask: rocket_flight_mask(projectile.presentation.team),
             });
-            retained.push(projectile);
+            self.projectiles.insert(index,projectile);
         }
-        self.projectiles = retained;
-        Ok(())
+        Ok(phase)
     }
 
     fn detonate(
         &mut self,
         projectile_events: &mut Vec<ProjectileEvent>,
         events: &mut Vec<Event>,
-    ) -> Result<(), Error> {
-        let mut retained = Vec::new();
-        for projectile in std::mem::take(&mut self.projectiles) {
-            let detonatable = self.tick.saturating_sub(projectile.creation_tick) as f32
-                * self.movement_configuration.tick_interval
-                >= 0.8;
+    ) -> Result<MapPhase, Error> {
+        let mut phase = MapPhase::default();
+        let roster=self.projectiles.iter().map(|projectile|projectile.presentation.identity).collect::<Vec<_>>();
+        for identity in roster {
+            let Some(index)=self.projectiles.iter().position(|value|value.presentation.identity==identity) else {continue;};
+            let projectile=&self.projectiles[index];
+            if projectile.retiring {continue;}
+            let interval=self.movement_configuration.tick_interval;
+            let detonatable = self.tick as f32*interval-projectile.creation_tick as f32*interval >= 0.8;
             let flare = self.weapon == Some(Weapon::Detonator)
                 && projectile.presentation.kind == ProjectileKind::Flare
                 && projectile.presentation.weapon == Weapon::Detonator
                 && projectile.presentation.source_weapon.is_some()
                 && projectile.presentation.source_weapon == self.weapon_source(PLAYER_IDENTITY, Weapon::Detonator);
-            if flare || projectile.presentation.kind == ProjectileKind::Sticky && detonatable
+            if flare || projectile.launcher_linked && projectile.presentation.kind == ProjectileKind::Sticky && detonatable
                 && projectile.presentation.owner_identity == PLAYER_IDENTITY {
-                self.explode(projectile, projectile_events, events)?;
-            } else {
-                retained.push(projectile);
+                let projectile=self.projectiles.remove(index);
+                phase.append(if flare {self.explode(projectile, projectile_events, events)?}
+                else {self.detonate_grenade(projectile, projectile_events, events)?});
             }
         }
-        self.projectiles = retained;
-        Ok(())
+        Ok(phase)
     }
 
     fn explode(
         &mut self,
-        projectile: LiveProjectile,
+        mut projectile: LiveProjectile,
         projectile_events: &mut Vec<ProjectileEvent>,
         events: &mut Vec<Event>,
-    ) -> Result<(), Error> {
+    ) -> Result<MapPhase, Error> {
         let direct = projectile.direct_target;
-        let (presentation, killing_weapon) = self.publish_explosion(projectile, projectile_events)?;
-        self.apply_blast(&presentation, killing_weapon, direct, events)
+        let rigid=projectile.presentation.kind.uses_rigid_physics();
+        if rigid {
+            self.rigid.as_mut().ok_or(Error::MissingRigidResources)?.world.set_projectile_solid(projectile.presentation.identity,false).map_err(Error::Rigid)?;
+            projectile.solid=false;
+            let entity = entity_queries::Entity::Projectile(projectile.presentation.identity);
+            self.entity_queries.set_lists(entity, 0).map_err(Error::ProjectileTrace)?;
+            self.entity_queries.mark_dirty(entity).map_err(Error::ProjectileTrace)?;
+        } else {
+            self.entity_queries.destroy(entity_queries::Entity::Projectile(projectile.presentation.identity)).map_err(Error::ProjectileTrace)?;
+        }
+        let (presentation, killing_weapon) = self.publish_explosion(&mut projectile, projectile_events)?;
+        if rigid {self.retain_rigid_entity(projectile);}
+        let phase = self.apply_blast(&presentation, killing_weapon, direct, events, projectile_events)?;
+        let bots=self.bots.as_ref();
+        let local_alive=self.lifecycle==PlayerLifecycle::Active;
+        self.posed_player_hitboxes.retain(|hitbox|if hitbox.entity==PLAYER_IDENTITY {local_alive}else{bots.and_then(|bots|bots.health(hitbox.entity)).is_some_and(|health|health>0)});
+        if rigid && let Some(projectile)=self.projectiles.iter_mut().find(|value|value.presentation.identity==presentation.identity) {
+            projectile.retiring=true;
+            projectile.next_think_tick=self.tick;
+            projectile.detonate_on_think=false;
+            projectile.rigid_entity_velocity=[0.0;3];
+        }
+        Ok(phase)
     }
 
     fn apply_blast(
@@ -7350,82 +7189,60 @@ impl<W: GameplayWorld + Clone> Session<W> {
         killing_weapon: &'static str,
         direct: Option<u32>,
         events: &mut Vec<Event>,
-    ) -> Result<(), Error> {
+        projectile_events: &mut Vec<ProjectileEvent>,
+    ) -> Result<MapPhase, Error> {
         let mut hits = projectile_weapon::RadiusHits::default();
-        let kind = self.projectile_blast_kind(projectile);
-        if projectile.owner_identity != PLAYER_IDENTITY
-            && projectile.team.is_enemy(self.team_selection.local_team())
-            && self.lifecycle == PlayerLifecycle::Active
-        {
-            let center = add(self.movement.position, [0.0, 0.0, 41.0]);
-            let visible = self
-                .collision
-                .trace(
-                    projectile.position,
-                    center,
-                    Hull {
-                        mins: [0.0; 3],
-                        maxs: [0.0; 3],
-                    },
-                    MASK_SOLID_BRUSH_ONLY,
-                )
-                .is_ok_and(|trace| trace.fraction >= 1.0 || trace.start_solid);
-            if let Some(damage) = combat::player_blast_damage(
-                kind,
-                projectile.position,
-                combat::PlayerBlastTarget {
-                    nearest_distance: {
-                        let hull = self.movement.active_hull(MovementPolicy { class: self.class, modifiers: self.movement_modifiers }.resolve());
-                        combat::nearest_hull_distance(projectile.position, self.movement.position, hull.mins, hull.maxs)
-                    },
-                    origin: self.movement.position,
-                    world_center: center,
-                    direct_hit: direct == Some(PLAYER_IDENTITY),
-                    visible,
-                    self_damage: false,
-                },
-            ) {
-                let accepted = self.apply_projectile_damage(projectile, killing_weapon, PLAYER_IDENTITY, damage.damage, false, true, events)?;
-                hits.record(accepted, true);
+        let mut phase = MapPhase::default();
+        use entity_queries::Entity as Q;
+        self.sync_bot_queries()?;
+        self.flush_entity_queries()?;
+        let radius = self.projectile_radius(projectile);
+        let candidates = if radius > 0.0 { self.entity_queries.sphere(projectile.position, radius, 0x10, 512, |_| true).map_err(Error::ProjectileTrace)? } else { Vec::new() };
+        for entity in candidates {
+            if entity == Q::Actor(projectile.owner_identity) { continue; }
+            let actor = if let Q::Actor(identity) = entity { self.projectile_target(identity) } else { None };
+            match entity {
+                Q::Actor(_) if actor.is_none() => continue,
+                Q::Projectile(identity) if !self.projectiles.iter().any(|value| value.presentation.identity == identity && value.presentation.kind.uses_rigid_physics() && !value.retiring) => continue,
+                Q::Map(handle) if !self.map.radius_damageable(handle) => continue,
+                Q::Follower { .. } | Q::StaticProp(_) => continue,
+                _ => {}
             }
-        }
-        let victims = self
-            .bots
-            .as_ref()
-            .map_or_else(Vec::new, |bots| bots.combat_targets().collect::<Vec<_>>());
-        for victim in victims {
-            if !projectile.team.is_enemy(victim.team) || victim.identity == projectile.owner_identity
-            {
-                continue;
+            let (transform, mut hull) = self.entity_queries.collision_geometry(entity).map_err(Error::ProjectileTrace)?;
+            if let Some(actor) = actor { hull = actor.hull; }
+            if let Q::Map(handle) = entity && self.map.brush_query_data(handle).map_err(Error::Entity)?.is_some() {
+                hull.mins = hull.mins.map(|value| value + 1.0);
+                hull.maxs = hull.maxs.map(|value| value - 1.0);
             }
-            let center = victim.world_center();
-            let visible = self
-                .collision
-                .trace(
-                    projectile.position,
-                    center,
-                    Hull {
-                        mins: [0.0; 3],
-                        maxs: [0.0; 3],
-                    },
-                    MASK_SOLID_BRUSH_ONLY,
-                )
-                .is_ok_and(|trace| trace.fraction >= 1.0 || trace.start_solid);
-            if let Some(damage) = combat::player_blast_damage(
-                kind,
-                projectile.position,
-                combat::PlayerBlastTarget {
-                    nearest_distance: combat::nearest_hull_distance(projectile.position, victim.position,
-                        victim.hull.mins, victim.hull.maxs),
-                    origin: victim.position,
-                    world_center: center,
-                    direct_hit: direct == Some(victim.identity),
-                    visible,
-                    self_damage: victim.identity == projectile.owner_identity,
-                },
-            ) {
-                let accepted = self.apply_projectile_damage(projectile, killing_weapon, victim.identity, damage.damage, false, true, events)?;
-                hits.record(accepted, projectile.team.is_enemy(victim.team));
+            let (nearest, center) = entity_queries::Bounds::nearest_and_center(transform.origin, hull, Some(transform.angles), projectile.position).map_err(Error::ProjectileTrace)?;
+            let separation = sub(projectile.position, nearest);
+            if dot(separation, separation) > radius * radius { continue; }
+            let (mut trace, mut obstruction) = self.radius_trace(projectile.position, center, Some(Q::Projectile(projectile.identity)), false)?;
+            if trace.start_solid && obstruction.is_some() {
+                (trace, obstruction) = self.radius_trace(projectile.position, center, obstruction, true)?;
+            }
+            if trace.fraction != 1.0 && obstruction != Some(entity) { continue; }
+            let distance = if actor.is_some_and(|actor| direct == Some(actor.identity)) { 0.0 }
+                else if let Some(actor) = actor { length(sub(projectile.position, center)).min(length(sub(projectile.position, actor.position))) }
+                else { length(sub(projectile.position, trace.end)) };
+            let amount = projectile.damage + (projectile.damage * 0.5 - projectile.damage) * (distance / radius).clamp(0.0, 1.0);
+            if amount <= 0.0 { continue; }
+            let force = self.blast_damage_force(amount, sub(center, projectile.position))?;
+            match entity {
+                Q::Projectile(identity) => { self.damage_sticky(identity, projectile.team, bot::weapon_damage_type(projectile.weapon).ok_or(Error::InvalidProjectilePhysics)?, force, projectile.position, projectile_events)?; }
+                Q::Actor(identity) => {
+                    let accepted = self.apply_projectile_damage(projectile, killing_weapon, identity, amount, false, true, force, events)?;
+                    hits.record(accepted, actor.is_some_and(|actor| projectile.team.is_enemy(actor.team)));
+                }
+                Q::Building(identity) => {
+                    let amount = self.source_weapon_attribute(projectile.launcher_source, projectile.launcher_weapon, "mult_dmg_vs_buildings", amount);
+                    self.buildings.damage(identity, projectile.team, amount);
+                }
+                Q::Map(handle) => {
+                    let source = self.map.query_source(handle).ok_or(Error::InvalidProjectilePhysics)?;
+                    phase.append(self.map.damage(self.tick, source, projectile.owner_identity)?);
+                }
+                _ => unreachable!(),
             }
         }
         let maximum_heal = self.source_weapon_attribute(projectile.source_weapon, projectile.weapon,
@@ -7434,7 +7251,15 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let healing = hits.healing(maximum_heal, script_damage);
         if healing > 0 { self.heal_projectile_actor(projectile.owner_identity, healing as f32, events)?; }
         self.apply_self_blast(projectile, killing_weapon, hits.enemy_players, events)?;
-        Ok(())
+        Ok(phase)
+    }
+
+    fn blast_damage_force(&mut self, amount: f32, direction: [f32; 3]) -> Result<[f32; 3], Error> {
+        let direction = playsrc_physics::normalize_source_vector(direction).map_err(|_| Error::InvalidProjectilePhysics)?;
+        let magnitude = (amount * (75.0 * 4.0)).min(75.0 * 400.0)
+            * self.draw_random_float(RandomContext::Authority, RandomDecision::BlastForce, 0.85, 1.15);
+        let direction = playsrc_physics::normalize_source_vector(direction).map_err(|_| Error::InvalidProjectilePhysics)?;
+        Ok(scale(direction, magnitude))
     }
 
     fn projectile_target(&self, identity: u32) -> Option<bot::CombatTarget> {
@@ -7469,15 +7294,15 @@ impl<W: GameplayWorld + Clone> Session<W> {
     }
 
     fn apply_projectile_damage(&mut self, projectile: &Projectile, killing_weapon: &'static str, victim: u32,
-        amount: f32, prevent_force: bool, explosion: bool, events: &mut Vec<Event>) -> Result<i32, Error> {
+        amount: f32, prevent_force: bool, explosion: bool, force: [f32; 3], events: &mut Vec<Event>) -> Result<i32, Error> {
         if amount <= 0.0 { return Ok(0); }
         let Some(target) = self.projectile_target(victim) else { return Ok(0); };
         let Some(attacker_center) = self.actor_center(projectile.owner_identity) else { return Ok(0); };
-        let (damage_weapon, source_weapon) = if projectile.kind == ProjectileKind::Flare {
+        let (damage_weapon, source_weapon) = if matches!(projectile.kind, ProjectileKind::Flare | ProjectileKind::Grenade) {
             (projectile.launcher_weapon, projectile.launcher_source)
         } else { (projectile.weapon, projectile.source_weapon) };
         let mut crit = if projectile.critical { damage::CritKind::Full }
-            else if projectile.deflected { damage::CritKind::Mini } else { damage::CritKind::None };
+            else if projectile.deflected && projectile.kind != ProjectileKind::Sticky { damage::CritKind::Mini } else { damage::CritKind::None };
         if projectile.kind == ProjectileKind::Flare && !prevent_force {
             crit = self.flare_type(projectile).direct_crit(crit, target.burning);
         }
@@ -7498,13 +7323,14 @@ impl<W: GameplayWorld + Clone> Session<W> {
             if projectile.deflected { "deflect_flare" } else if damage_weapon == Weapon::Manmelter { killing_weapon } else { "flaregun" }
         } else if projectile.kind == ProjectileKind::Rocket && projectile.deflected { "deflect_rocket" } else { killing_weapon };
         let killing_weapon = self.projectile_death_icon(projectile, custom, killing_weapon);
+        let damage_type = bot::weapon_damage_type(projectile.weapon).expect("projectile weapon damage type")
+            | if projectile.kind == ProjectileKind::Flare && explosion { damage::DamageType::HALF_FALLOFF } else { damage::DamageType::GENERIC }
+            | if prevent_force { damage::DamageType::PREVENT_FORCE } else { damage::DamageType::GENERIC };
         let result = self.apply_actor_damage(bot::Damage {
             source_weapon,
             custom,
-            damage_type: bot::weapon_damage_type(projectile.weapon).expect("projectile weapon damage type")
-                | if projectile.kind == ProjectileKind::Flare && explosion { damage::DamageType::HALF_FALLOFF } else { damage::DamageType::GENERIC }
-                | if prevent_force { damage::DamageType::PREVENT_FORCE } else { damage::DamageType::GENERIC },
-            force: [0.0; 3], modifiers: damage::DamageModifiers::default(), killing_weapon: Some(killing_weapon),
+            damage_type,
+            force, modifiers: damage::DamageModifiers::default(), killing_weapon: Some(killing_weapon),
             attacker: projectile.owner_identity, victim, weapon: damage_weapon,
             amount, position: projectile.position, crit, range_multiplier,
         }, projectile.team, events)?;
@@ -7521,7 +7347,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 target.world_center(), projectile.position, force_damage, 6.0).impulse;
             let impulse = if target.class == PlayerClass::Heavy { scale(impulse, 0.5) } else { impulse };
             let impulse = scale(impulse, self.equipped_damage_push_multiplier(victim));
-            let enemy_blast = victim != projectile.owner_identity && matches!(projectile.kind, ProjectileKind::Rocket | ProjectileKind::Sticky);
+            let enemy_blast = victim != projectile.owner_identity && damage_type.contains(damage::DamageType::BLAST);
             if victim == PLAYER_IDENTITY {
                 self.movement.velocity = add(self.movement.velocity, impulse);
                 self.blast_since_movement |= enemy_blast;
@@ -7548,6 +7374,13 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
     fn projectile_death_icon(&self, projectile: &Projectile, custom: damage::CustomDamage, captured: &'static str) -> &'static str {
         use projectile_weapon::WeaponId;
+        if projectile.deflected {
+            match projectile.kind {
+                ProjectileKind::Sticky => return "deflect_sticky",
+                ProjectileKind::Grenade => return "deflect_promode",
+                _ => {}
+            }
+        }
         let (id, base) = match projectile.kind {
             ProjectileKind::Rocket => if projectile.weapon == Weapon::DirectHit {
                 (WeaponId::RocketLauncherDirectHit, if projectile.deflected { "deflect_rocket" } else { "rocketlauncher_directhit" })
@@ -7593,7 +7426,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
     fn publish_explosion(
         &mut self,
-        mut projectile: LiveProjectile,
+        projectile: &mut LiveProjectile,
         projectile_events: &mut Vec<ProjectileEvent>,
     ) -> Result<(Projectile, &'static str), Error> {
         projectile.presentation.air_burst = projectile.presentation.kind == ProjectileKind::Flare;
@@ -7614,7 +7447,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             (ProjectileKind::Rocket, Weapon::RocketJumper) => SoundDefinition::RocketJumperExplosion,
             (ProjectileKind::Rocket, Weapon::AirStrike) => SoundDefinition::AirStrikeExplosion,
             (ProjectileKind::Rocket, _) => SoundDefinition::RocketExplosion,
-            (ProjectileKind::Sticky, _) => SoundDefinition::StickyExplosion,
+            (ProjectileKind::Sticky | ProjectileKind::Grenade, _) => SoundDefinition::StickyExplosion,
             (ProjectileKind::Syringe, _) => unreachable!("syringes do not explode"),
             (ProjectileKind::Flare, _) => {
                 let active = if projectile.presentation.owner_identity == PLAYER_IDENTITY { self.weapon }
@@ -7646,6 +7479,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             ProjectileKind::Rocket => (projectile.presentation.damage,
                 self.projectile_radius(&projectile.presentation), 121.0),
             ProjectileKind::Sticky => (120.0, 146.0, 146.0),
+            ProjectileKind::Grenade => (projectile.presentation.damage,self.projectile_radius(&projectile.presentation),146.0),
             ProjectileKind::Syringe => unreachable!("syringes do not cause blast damage"),
             ProjectileKind::Flare => (projectile.presentation.damage,
                 self.projectile_radius(&projectile.presentation), 100.0),
@@ -7659,17 +7493,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self_radius,
             direct_target: projectile.direct_target,
         });
-        if projectile.presentation.kind == ProjectileKind::Sticky {
-            self.physics_requests.retain(|request| {
-                request.projectile != projectile.presentation.identity
-                    || request.operation != ProjectilePhysicsOperation::Step
-            });
-            self.physics_requests.push(sticky_physics_request(
-                ProjectilePhysicsOperation::Destroy,
-                &projectile,
-                self.tick,
-            ));
-        } else {
+        if !projectile.presentation.kind.uses_rigid_physics() {
             self.rocket_trace_requests.retain(|request| request.projectile != projectile.presentation.identity);
         }
         projectile_events.push(projectile_event(
@@ -7677,12 +7501,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
             &projectile.presentation,
             self.tick,
         ));
-        Ok((projectile.presentation, projectile.killing_weapon))
+        Ok((projectile.presentation.clone(), projectile.killing_weapon))
     }
 
     fn projectile_radius(&mut self, projectile: &Projectile) -> f32 {
         let base = match projectile.kind {
-            ProjectileKind::Rocket | ProjectileKind::Sticky => 146.0,
+            ProjectileKind::Rocket | ProjectileKind::Sticky | ProjectileKind::Grenade => 146.0,
             ProjectileKind::Flare => {
                 if projectile.self_blast_only {
                     return 0.0;
@@ -7713,6 +7537,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 damage: projectile.damage, radius: self.projectile_radius(projectile),
             },
             ProjectileKind::Sticky => combat::BlastKind::Sticky,
+            ProjectileKind::Grenade => combat::BlastKind::Grenade {damage:projectile.damage,radius:self.projectile_radius(projectile)},
             ProjectileKind::Syringe => unreachable!("syringes have no blast"),
         }
     }
@@ -7735,8 +7560,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
     fn apply_self_blast(&mut self, projectile: &Projectile, killing_weapon: &'static str, damaged_enemies: u32, events: &mut Vec<Event>) -> Result<(), Error> {
         let owner = projectile.owner_identity;
         let Some(target) = self.projectile_target(owner) else { return Ok(()); };
-        let weapon = if projectile.kind == ProjectileKind::Flare { projectile.launcher_weapon } else { projectile.weapon };
-        let source_weapon = if projectile.kind == ProjectileKind::Flare { projectile.launcher_source } else { projectile.source_weapon };
+        let weapon = if matches!(projectile.kind, ProjectileKind::Flare | ProjectileKind::Grenade) { projectile.launcher_weapon } else { projectile.weapon };
+        let source_weapon = if matches!(projectile.kind, ProjectileKind::Flare | ProjectileKind::Grenade) { projectile.launcher_source } else { projectile.source_weapon };
         let custom = if projectile.kind == ProjectileKind::Flare { damage::CustomDamage::Other(44) } else { damage::CustomDamage::None };
         let killing_weapon = self.projectile_death_icon(projectile, custom, killing_weapon);
         let hull = target.hull;
@@ -7745,18 +7570,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
             target.position,
             scale(add(hull.mins, hull.maxs), 0.5),
         );
-        let visible = self
-            .collision
-            .trace(
-                projectile.position,
-                center,
-                Hull {
-                    mins: [0.0; 3],
-                    maxs: [0.0; 3],
-                },
-                self.movement_configuration.solid_mask,
-            )
-            .is_ok_and(|trace| trace.fraction == 1.0 || trace.start_solid);
+        let (mut trace, mut obstruction) = self.radius_trace(projectile.position, center, Some(entity_queries::Entity::Projectile(projectile.identity)), false)?;
+        if trace.start_solid && obstruction.is_some() {
+            (trace, obstruction) = self.radius_trace(projectile.position, center, obstruction, true)?;
+        }
+        let visible = trace.fraction == 1.0 || obstruction == Some(entity_queries::Entity::Actor(owner));
         let kind = self.projectile_blast_kind(projectile);
         let grounded = target.grounded;
         let class = match target.class {
@@ -7777,6 +7595,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 self_damage: true,
             },
         ) {
+            let force = self.blast_damage_force(base_damage.damage, sub(center, projectile.position))?;
             let mut damage =
                 combat::apply_self_damage_rules(base_damage, class, grounded, target.in_water);
             if damaged_enemies == 0 {
@@ -7796,7 +7615,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 damage_type: if projectile.kind == ProjectileKind::Flare {
                     damage::DamageType::BULLET | damage::DamageType::IGNITE | damage::DamageType::HALF_FALLOFF
                         | if projectile.self_blast_only { damage::DamageType::BLAST } else { damage::DamageType::GENERIC }
-                } else { damage::DamageType::BLAST }, force: [0.0; 3], crit: damage::CritKind::None,
+                } else { damage::DamageType::BLAST }, force, crit: damage::CritKind::None,
                 range_multiplier: 1.0, custom,
                 modifiers: damage::DamageModifiers::default(), killing_weapon: Some(killing_weapon),
             }, target.team, events)?;
@@ -7822,7 +7641,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         Ok(())
     }
 
-    fn fizzle_projectiles(&mut self, events: &mut Vec<ProjectileEvent>, all_owners: bool) {
+    fn remove_projectiles(&mut self, events: &mut Vec<ProjectileEvent>, all_owners: bool)->Result<(),Error> {
         let mut retained = Vec::new();
         for projectile in std::mem::take(&mut self.projectiles) {
             if !all_owners && projectile.presentation.owner_identity != PLAYER_IDENTITY {
@@ -7831,27 +7650,20 @@ impl<W: GameplayWorld + Clone> Session<W> {
             }
             self.rocket_trace_requests
                 .retain(|request| request.projectile != projectile.presentation.identity);
-            if projectile.presentation.kind == ProjectileKind::Sticky {
-                self.physics_requests.retain(|request| {
-                    request.projectile != projectile.presentation.identity
-                        || request.operation != ProjectilePhysicsOperation::Step
-                });
-                self.physics_requests.push(sticky_physics_request(
-                    ProjectilePhysicsOperation::Destroy,
-                    &projectile,
-                    self.tick,
-                ));
-            }
-            events.push(projectile_event(
+            if !projectile.retiring && projectile.solid {events.push(projectile_event(
                 ProjectileEventKind::Fizzle,
                 &projectile.presentation,
                 self.tick,
-            ));
+            ));}
+            if projectile.presentation.kind.uses_rigid_physics() {
+                self.destroy_rigid_projectile(projectile.presentation.identity)?;
+            }
         }
         self.projectiles = retained;
+        Ok(())
     }
 
-    fn die(&mut self, projectile_events: &mut Vec<ProjectileEvent>) {
+    fn die(&mut self, projectile_events: &mut Vec<ProjectileEvent>)->Result<(),Error> {
         self.save_weapon_selection(true);
         self.stop_manmelter_charge();
         self.afterburn = None;
@@ -7861,6 +7673,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.melee.reset_victim(PLAYER_IDENTITY);
         for condition in [Condition::Bleeding, Condition::MarkedForDeath] { self.conditions.remove(condition); }
         self.lifecycle = PlayerLifecycle::Dying;
+        self.sync_local_query();
+        self.posed_player_hitboxes.retain(|hitbox|hitbox.entity!=PLAYER_IDENTITY);
         self.death_tick = Some(self.tick);
         self.scoreboard.local_death();
         if self.jump.is_none() {
@@ -7872,13 +7686,14 @@ impl<W: GameplayWorld + Clone> Session<W> {
             class: self.class,
             team: self.team_selection.local_team(),
         });
-        self.fizzle_projectiles(projectile_events, false);
+        self.fizzle_launcher_stickies(projectile_events);
         self.fire_was_held = false;
         self.pending_melee_tick = None;
         for weapon in self.loadout.values_mut() {
             weapon.abort_reload();
             weapon.charge_begin_tick = None;
         }
+        Ok(())
     }
 
     fn respawn(
@@ -7886,7 +7701,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         projectile_events: &mut Vec<ProjectileEvent>,
         events: &mut Vec<Event>,
         movement_policy: GenericMovementPolicy,
-    ) {
+    )->Result<(),Error> {
         // WeaponReset destroys sound patches without emitting a winddown.
         if self.lifecycle == PlayerLifecycle::Active { self.save_weapon_selection(false); }
         self.stop_flame(true);
@@ -7900,7 +7715,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.critical_history.reset_for_spawn();
         self.stop_manmelter_charge();
         self.afterburn = None;
-        self.fizzle_projectiles(projectile_events, false);
+        self.fizzle_launcher_stickies(projectile_events);
         self.damagers = deathnotice::DamagerHistory::default();
         self.health = self.maximum_health();
         self.ammo = self.class.data().maximum_ammo;
@@ -7935,6 +7750,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             },
             movement_policy,
         );
+        self.sync_local_query();
         self.snap_spawn_angles();
         self.air_dashes = 0;
         self.in_water = false;
@@ -7953,6 +7769,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             player: PLAYER_IDENTITY,
             team: self.team_selection.local_team(),
         });
+        Ok(())
     }
 
     pub fn maximum_ammo(&self) -> class::AmmoLedger {
@@ -8121,28 +7938,7 @@ fn remap_clamped(value: f32, a: f32, b: f32, c: f32, d: f32) -> f32 {
     c + (d - c) * fraction
 }
 
-fn sticky_physics_request(
-    operation: ProjectilePhysicsOperation,
-    projectile: &LiveProjectile,
-    tick: u64,
-) -> ProjectilePhysicsRequest {
-    ProjectilePhysicsRequest {
-        operation,
-        projectile: projectile.presentation.identity,
-        tick,
-        position: projectile.presentation.position,
-        velocity: projectile.presentation.velocity,
-        orientation: projectile.presentation.orientation,
-        angular_velocity: projectile.presentation.angular_velocity,
-        hull: Hull {
-            mins: [-2.0; 3],
-            maxs: [2.0; 3],
-        },
-        gravity_scale: 0.4,
-        friction: 0.2,
-        elasticity: 0.45,
-    }
-}
+fn source_think_tick(tick:u64,seconds:f32,interval:f32)->u64 {let time=tick as f32*interval+seconds;(0.5_f32+time/interval) as u64}
 
 fn quaternion_from_angles(pitch: f32, yaw: f32, roll: f32) -> [f32; 4] {
     let (sp, cp) = (pitch.to_radians() * 0.5).sin_cos();
@@ -8164,8 +7960,17 @@ fn quaternion_from_direction(direction: [f32; 3]) -> [f32; 4] {
     quaternion_from_angles(pitch, yaw, 0.0)
 }
 
-fn quaternion_length(value: [f32; 4]) -> f32 {
-    (value[0] * value[0] + value[1] * value[1] + value[2] * value[2] + value[3] * value[3]).sqrt()
+fn deflection_orientation(direction: [f32; 3]) -> [f32; 4] {
+    let (pitch, yaw) = if direction[0] == 0.0 && direction[1] == 0.0 {
+        (if direction[2] > 0.0 { 270.0 } else { 90.0 }, 0.0)
+    } else {
+        let mut yaw = direction[1].atan2(direction[0]).to_degrees();
+        let mut pitch = (-direction[2]).atan2((direction[0] * direction[0] + direction[1] * direction[1]).sqrt()).to_degrees();
+        if yaw < 0.0 { yaw += 360.0; }
+        if pitch < 0.0 { pitch += 360.0; }
+        (pitch, yaw)
+    };
+    quaternion_from_angles(pitch, yaw, 0.0)
 }
 
 fn normalized(value: [f32; 3]) -> [f32; 3] {
@@ -8238,7 +8043,7 @@ mod tests {
     };
 
     #[derive(Clone)]
-    struct Floor;
+    pub(super) struct Floor;
 
     impl Tracer for Floor {
         fn trace(
@@ -8278,6 +8083,7 @@ mod tests {
     }
 
     impl GameplayWorld for Floor {
+        fn static_query_bounds(&self) -> Result<Vec<(u64, Hull)>, MoveError> { Ok(Vec::new()) }
         fn overlaps_model_hull(
             &self,
             _: usize,
@@ -8303,7 +8109,7 @@ mod tests {
                         session.advance(Command { select_weapon: Some(melee), ..Command::default() }).unwrap();
                         session.advance(Command { select_weapon: Some(secondary), ..Command::default() }).unwrap();
                         assert_eq!(session.last_weapon, Some(melee));
-                        if dying { session.die(&mut Vec::new()); }
+                        if dying { session.die(&mut Vec::new()).unwrap(); }
                         let spawned = session.advance(Command { respawn: true, ..Command::default() }).unwrap();
                         assert_eq!(spawned.weapon, Some(if remember_active { secondary } else { primary }), "{class:?}/{remember_active}/{remember_last}/{dying}");
                         let last_slot = if remember_last { 2 } else if remember_active && session.weapon_selection_slot(secondary) != Some(0) { 0 } else { 1 };
@@ -8350,13 +8156,13 @@ mod tests {
         session.advance(Command { select_class: Some(PlayerClass::Scout), weapon_preferences: Some(WeaponPreferences { remember_active: true, remember_last: true }), ..Command::default() }).unwrap();
         session.advance(Command { select_weapon: Some(Weapon::Pistol), ..Command::default() }).unwrap();
         session.advance(Command { select_weapon: Some(Weapon::Scattergun), ..Command::default() }).unwrap();
-        session.die(&mut Vec::new());
+        session.die(&mut Vec::new()).unwrap();
         session.equip_item(PlayerClass::Scout, schema::LoadoutPosition::Primary, Some(45)).unwrap();
         session.advance(Command { respawn: true, ..Command::default() }).unwrap();
         assert_eq!(session.weapon, Some(Weapon::Scattergun));
         assert_eq!(session.active_equipment.weapon_definition(PlayerClass::Scout, Weapon::Scattergun), Some(45));
         assert_eq!(session.last_weapon, Some(Weapon::Pistol));
-        session.die(&mut Vec::new());
+        session.die(&mut Vec::new()).unwrap();
         session.equip_item(PlayerClass::Scout, schema::LoadoutPosition::Primary, Some(220)).unwrap();
         session.advance(Command { respawn: true, ..Command::default() }).unwrap();
         assert_eq!(session.weapon, Some(Weapon::HandgunScoutPrimary));
@@ -8367,7 +8173,7 @@ mod tests {
         assert_eq!(session.weapon, Some(Weapon::EngineerShotgun));
         assert_eq!(session.last_weapon, Some(Weapon::EngineerPistol));
         session.weapon = Some(Weapon::Toolbox);
-        session.die(&mut Vec::new());
+        session.die(&mut Vec::new()).unwrap();
         session.advance(Command { respawn: true, ..Command::default() }).unwrap();
         assert_eq!(session.weapon, Some(Weapon::EngineerShotgun));
     }
@@ -8556,7 +8362,7 @@ mod tests {
             let before = live.producer_snapshot();
             match (
                 live.advance(command),
-                owned.into_advanced(command, &[], &[], None),
+                owned.into_advanced(command, &[], None),
             ) {
                 (Ok(expected), Ok((next, actual))) => {
                     assert_eq!(actual, expected);
@@ -9276,6 +9082,84 @@ mod tests {
     }
 
     #[test]
+    fn hitscan_map_identity_is_not_resolved_as_an_actor() {
+        #[derive(Clone)]
+        struct MapHit;
+        impl Tracer for MapHit {
+            fn is_world(&self, hit: u64) -> bool { hit == 0 }
+            fn trace(&self, start: [f32; 3], end: [f32; 3], hull: Hull, mask: u32) -> Result<Trace, MoveError> {
+                let mut trace = MeleeWall.trace(start, end, hull, mask)?;
+                if trace.normal == Some([-1.0, 0.0, 0.0]) { trace.hit = Some(1); }
+                Ok(trace)
+            }
+        }
+        impl GameplayWorld for MapHit {
+            fn trace_world(&self, start: [f32; 3], end: [f32; 3], hull: Hull, mask: u32) -> Result<Trace, MoveError> { Floor.trace(start, end, hull, mask) }
+            fn trace_brush(&self, _: usize, request: playsrc_collision::ObjectTraceRequest) -> Result<Trace, MoveError> {
+                let mut trace = MeleeWall.trace(request.start, request.end, request.hull, request.mask)?;
+                if trace.normal == Some([-1.0, 0.0, 0.0]) { trace.hit = Some(request.identity); }
+                Ok(trace)
+            }
+            fn overlaps_model_hull(&self, _: usize, _: [f32; 3], _: [f32; 3], _: Hull) -> Result<bool, MoveError> { Ok(false) }
+        }
+        let graph = playsrc_entity::parse(br#"{"classname" "worldspawn"}
+            {"classname" "func_button" "targetname" "button" "model" "*1" "health" "1" "spawnflags" "1" "OnDamaged" "button,Unlock,,0,-1"}"#, Default::default()).unwrap();
+        let map = MapRuntime::compile(&graph, 0.015, 1, vec![playsrc_entity::ModelBounds { model: 1, mins: [32.0, -16.0, 0.0], maxs: [40.0, 16.0, 96.0] }]).unwrap();
+        let mut session = Session::new(MapHit, [0.0, 0.0, 1.0], map);
+        let health = session.health;
+        let mut events = Vec::new();
+        let phase = session.fire_hitscan(Weapon::Shotgun, 0.0, 0.0, &mut events, None, &mut Vec::new()).unwrap();
+        assert!(events.iter().any(|event| matches!(event, Event::HitscanImpact { target: Some(1), .. })));
+        assert_eq!(session.health, health);
+        assert!(!events.iter().any(|event| matches!(event, Event::PlayerDamaged { .. } | Event::Damaged { .. })));
+        assert!(!phase.events.is_empty());
+    }
+
+    #[test]
+    fn stock_shotgun_flushes_damage_when_the_trace_target_changes() {
+        #[derive(Clone)]
+        struct ScriptedMapHits(Arc<std::sync::atomic::AtomicUsize>);
+        impl Tracer for ScriptedMapHits {
+            fn is_world(&self, hit: u64) -> bool { hit == 0 }
+            fn trace(&self, start: [f32; 3], end: [f32; 3], hull: Hull, mask: u32) -> Result<Trace, MoveError> {
+                let mut trace = MeleeWall.trace(start, end, hull, mask)?;
+                if trace.normal == Some([-1.0, 0.0, 0.0]) {
+                    let index = self.0.fetch_add(1, Ordering::SeqCst);
+                    trace.hit = Some([1, 2, 1, 1, 2, 2, 1, 1, 1, 1][index]);
+                }
+                Ok(trace)
+            }
+        }
+        impl GameplayWorld for ScriptedMapHits {
+            fn trace_world(&self, start: [f32; 3], end: [f32; 3], hull: Hull, mask: u32) -> Result<Trace, MoveError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Floor.trace(start, end, hull, mask)
+            }
+            fn trace_brush(&self, _: usize, request: playsrc_collision::ObjectTraceRequest) -> Result<Trace, MoveError> {
+                let index = self.0.load(Ordering::SeqCst) - 1;
+                if request.identity != [1, 2, 1, 1, 2, 2, 1, 1, 1, 1][index] {
+                    return Ok(Trace { fraction: 1.0, start_solid: false, all_solid: false, end: request.end, normal: None, hit: None, contents: 0 });
+                }
+                let mut trace = MeleeWall.trace(request.start, request.end, request.hull, request.mask)?;
+                trace.hit = Some(request.identity);
+                Ok(trace)
+            }
+            fn overlaps_model_hull(&self, _: usize, _: [f32; 3], _: [f32; 3], _: Hull) -> Result<bool, MoveError> { Ok(false) }
+        }
+        let graph = playsrc_entity::parse(br#"{"classname" "worldspawn"}
+            {"classname" "func_button" "targetname" "a" "model" "*1" "health" "1" "spawnflags" "1" "OnDamaged" "a,Unlock,,0,-1"}
+            {"classname" "func_button" "targetname" "b" "model" "*2" "health" "1" "spawnflags" "1" "OnDamaged" "b,Unlock,,0,-1"}"#, Default::default()).unwrap();
+        let bounds = (1..=2).map(|model| playsrc_entity::ModelBounds { model, mins: [32.0, -16.0, 0.0], maxs: [40.0, 16.0, 96.0] }).collect();
+        let map = MapRuntime::compile(&graph, 0.015, 1, bounds).unwrap();
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut session = Session::new(ScriptedMapHits(Arc::clone(&count)), [0.0, 0.0, 1.0], map);
+        let phase = session.fire_hitscan(Weapon::Shotgun, 0.0, 0.0, &mut Vec::new(), None, &mut Vec::new()).unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 10);
+        assert_eq!(phase.events.iter().filter(|event| event.kind == EntityEventKind::Output && event.name == b"OnDamaged")
+            .map(|event| event.entity).collect::<Vec<_>>(), [1, 2, 1, 2, 1]);
+    }
+
+    #[test]
     fn heavy_stock_weapons_preserve_spin_conditions_audio_ammo_and_delayed_fist_contact() {
         let mut session = Session::new(MeleeWall, [0.0; 3], MapRuntime::empty(0.015));
         let selected = session
@@ -9688,37 +9572,25 @@ mod tests {
 
     #[test]
     fn demoman_bottle_traces_line_then_hull_and_friendly_player_contacts() {
-        for (lateral, enemy) in [(0.0, true), (20.0, true), (0.0, false)] {
+        for (lateral, enemy) in [(0.0, true), (20.0, true), (30.0, true), (0.0, false)] {
             let world = RecordingWorld::default();
             let traces = world.traces.clone();
             let mut session = Session::new(world, [0.0; 3], MapRuntime::empty(0.015));
+            session.configure_navigation(bot::tests::fixture_mesh(), &bot::tests::fixture_graph()).unwrap();
             session.movement_configuration.gravity = 0.0;
             session
                 .advance(Command {
                     select_class: Some(PlayerClass::Demoman),
                     select_weapon: Some(Weapon::Bottle),
+                    nextbot_stop: true,
+                    bot_request: Some(bot::Request { operation: bot::Operation::Add, count: 1, class: Some(PlayerClass::Heavy),
+                        team: Some(if enemy { PlayerTeam::Blue } else { PlayerTeam::Red }), difficulty: bot::Difficulty::Normal }),
                     ..Command::default()
                 })
                 .unwrap();
-            session.set_posed_player_hitboxes(vec![PosedPlayerHitbox {
-                entity: 7,
-                team: if enemy {
-                    PlayerTeam::Blue
-                } else {
-                    PlayerTeam::Red
-                },
-                hitbox: 0,
-                group: 2,
-                bone: 0,
-                physics_bone: 0,
-                bone_contents: 0x0200_0000,
-                minimum: [-3.0; 3],
-                maximum: [3.0; 3],
-                bone_to_world: [
-                    1.0, 0.0, 0.0, 30.0, 0.0, 1.0, 0.0, lateral, 0.0, 0.0, 1.0, 68.0,
-                ],
-                origin: [30.0, lateral, 0.0],
-            }]);
+            session.set_position([0.0; 3]).unwrap();
+            let target = session.bots.as_ref().unwrap().snapshots()[0].identity;
+            session.bots.as_mut().unwrap().teleport(target, [30.0, lateral, 0.0], 0.0, 180.0).unwrap();
             session
                 .loadout
                 .get_mut(&Weapon::Bottle)
@@ -9727,13 +9599,14 @@ mod tests {
             session
                 .advance(Command {
                     fire: true,
+                    nextbot_stop: true,
                     ..Command::default()
                 })
                 .unwrap();
             traces.lock().unwrap().clear();
             let mut impact = None;
             while session.pending_melee_tick.is_some() {
-                let snapshot = session.advance(Command::default()).unwrap();
+                let snapshot = session.advance(Command { nextbot_stop: true, ..Default::default() }).unwrap();
                 impact = snapshot
                     .events
                     .into_iter()
@@ -9742,8 +9615,8 @@ mod tests {
             if enemy {
                 assert!(
                     matches!(impact,
-                        Some(Event::MeleeImpact { weapon: Weapon::Bottle, target: Some(7), damage, .. })
-                        if damage == 65.0
+                        Some(Event::MeleeImpact { weapon: Weapon::Bottle, target: Some(identity), damage, .. })
+                        if identity == target && damage == 65.0
                     ),
                     "lateral={lateral}, impact={impact:?}"
                 );
@@ -9756,13 +9629,13 @@ mod tests {
                     .iter()
                     .filter(|(_, _, _, mask)| *mask == MASK_SOLID)
                     .collect::<Vec<_>>();
-                assert_eq!(swings.len(), if lateral == 0.0 { 1 } else { 2 });
+                assert_eq!(swings.len(), if lateral <= 24.0 { 1 } else { 2 });
                 assert_eq!(swings[0].2.mins, [0.0; 3]);
-                if lateral != 0.0 {
+                if lateral > 24.0 {
                     assert_eq!(swings[1].2.mins, [-18.0; 3]);
                 }
             } else {
-                assert!(matches!(impact, Some(Event::MeleeImpact { target: Some(7), .. })));
+                assert!(matches!(impact, Some(Event::MeleeImpact { target: Some(identity), .. }) if identity == target));
                 assert_eq!(session.audio_events()[0].definition, SoundDefinition::BottleHitFlesh);
             }
         }
@@ -9770,27 +9643,22 @@ mod tests {
 
     #[test]
     fn demoman_bottle_does_not_damage_an_enemy_behind_world_geometry() {
+        for x in [40.0, 80.0] {
         let mut session = Session::new(MeleeWall, [0.0; 3], MapRuntime::empty(0.015));
+        session.configure_navigation(bot::tests::fixture_mesh(), &bot::tests::fixture_graph()).unwrap();
         session
             .advance(Command {
                 select_class: Some(PlayerClass::Demoman),
                 select_weapon: Some(Weapon::Bottle),
+                nextbot_stop: true,
+                bot_request: Some(bot::Request { operation: bot::Operation::Add, count: 1, class: Some(PlayerClass::Heavy), team: Some(PlayerTeam::Blue), difficulty: bot::Difficulty::Normal }),
                 ..Command::default()
             })
             .unwrap();
-        session.set_posed_player_hitboxes(vec![PosedPlayerHitbox {
-            entity: 7,
-            team: PlayerTeam::Blue,
-            hitbox: 0,
-            group: 2,
-            bone: 0,
-            physics_bone: 0,
-            bone_contents: 0x0200_0000,
-            minimum: [-2.0; 3],
-            maximum: [2.0; 3],
-            bone_to_world: [1.0, 0.0, 0.0, 40.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 68.0],
-            origin: [40.0, 0.0, 0.0],
-        }]);
+        session.set_position([0.0; 3]).unwrap();
+        let target = session.bots.as_ref().unwrap().snapshots()[0].identity;
+        session.bots.as_mut().unwrap().teleport(target, [x, 0.0, 0.0], 0.0, 180.0).unwrap();
+        session.loadout.get_mut(&Weapon::Bottle).unwrap().critical.bucket.token_bucket = -250.0;
         session
             .loadout
             .get_mut(&Weapon::Bottle)
@@ -9799,25 +9667,22 @@ mod tests {
         session
             .advance(Command {
                 fire: true,
+                nextbot_stop: true,
                 ..Command::default()
             })
             .unwrap();
         while session.pending_melee_tick.is_some() {
-            let snapshot = session.advance(Command::default()).unwrap();
+            let snapshot = session.advance(Command { nextbot_stop: true, ..Default::default() }).unwrap();
             if session.pending_melee_tick.is_none() {
-                assert!(snapshot.events.iter().any(|event| matches!(
-                    event,
-                    Event::MeleeImpact {
-                        weapon: Weapon::Bottle,
-                        target: None,
-                        ..
-                    }
-                )));
+                assert!(snapshot.events.iter().any(|event| matches!(event, Event::MeleeImpact { weapon: Weapon::Bottle, target: identity, .. }
+                    if *identity == if x == 40.0 { Some(target) } else { None })));
                 assert_eq!(
                     session.audio_events()[0].definition,
-                    SoundDefinition::BottleHitWorld
+                    if x == 40.0 { SoundDefinition::BottleHitFlesh } else { SoundDefinition::BottleHitWorld }
                 );
+                assert_eq!(session.bots.as_ref().unwrap().health(target), Some(if x == 40.0 { 235 } else { 300 }));
             }
+        }
         }
     }
 
@@ -10281,7 +10146,7 @@ mod tests {
             2
         );
         base.audio_events.clear();
-        base.die(&mut Vec::new());
+        base.die(&mut Vec::new()).unwrap();
         assert!(!base.flame_firing);
         assert_eq!(
             base.audio_events
@@ -10348,6 +10213,11 @@ mod tests {
             PlayerTeam::Red
         };
         let create = |identity, team| LiveProjectile {
+            retiring:false,solid:true,launcher_linked:false,prearm_think_tick:None,server_arm_think_tick:None,teammate_collision_enabled:false,
+            rigid_entity_velocity:[0.0;3],
+            full_damage:90.0,detonate_time:None,
+            deflect_owner:None,deflected_until:None,
+            minimum_sleep_time:0.0,touched_time:None,in_solid:false,teammate_collision_tick:0,
             killing_weapon: "tf_projectile_rocket",
             gravity_scale: 0.0,
             flare_debris: false,
@@ -10384,16 +10254,30 @@ mod tests {
             },
             armed: false,
             creation_tick: 0,
-            arm_tick: 0,
             next_think_tick: 0,
-            forced_detonate_tick: None,
+            detonate_on_think: false,
             motion_enabled: true,
             direct_target: None,
         };
         session.projectiles.push(create(1, opposite));
         session.projectiles.push(create(2, team));
-        session
-            .advance_flamethrower(
+        let mut corner = create(3, opposite);
+        corner.presentation.position = add(add(session.movement.position, session.movement.view_offset), [0.0, 127.0, 127.0]);
+        session.projectiles.push(corner);
+        for projectile in &session.projectiles {
+            let entity = entity_queries::Entity::Projectile(projectile.presentation.identity);
+            session.entity_queries.register(entity).unwrap();
+            session.entity_queries.bind_bounds(entity, projectile.presentation.position, projectile.presentation.kind.entity_hull(), None).unwrap();
+            session.entity_queries.set_lists(entity, 0x11).unwrap();
+        }
+        let mut unobstructed = session.clone();
+        unobstructed.entity_queries.set_origin(entity_queries::Entity::Projectile(2),
+            &mut unobstructed.projectiles[1].presentation.position, [80.0, 16.0, 68.0]).unwrap();
+        let mut off_axis = unobstructed.clone();
+        off_axis.entity_queries.set_origin(entity_queries::Entity::Projectile(1),
+            &mut off_axis.projectiles[0].presentation.position, [80.0, 1.0, 68.0]).unwrap();
+        for current in [&mut session, &mut unobstructed, &mut off_axis] {
+            current.advance_flamethrower(
                 Command {
                     detonate: true,
                     ..Command::default()
@@ -10403,17 +10287,25 @@ mod tests {
                 &mut Vec::new(),
             )
             .unwrap();
-        assert_eq!(session.projectiles[0].presentation.team, team);
+        }
+        assert_eq!(session.projectiles[0].presentation.team, opposite, "the overlapping friendly projectile blocks LOS");
+        assert!(!session.projectiles[0].presentation.deflected);
+        assert_eq!(unobstructed.projectiles[0].presentation.team, team);
         assert_eq!(
-            session.projectiles[0].presentation.owner_identity,
+            unobstructed.projectiles[0].presentation.owner_identity,
             PLAYER_IDENTITY
         );
-        assert!((length(session.projectiles[0].presentation.velocity) - 1_100.0).abs() < 0.01);
-        assert!(session.projectiles[0].presentation.velocity[0] > 1_099.0);
+        assert!((length(unobstructed.projectiles[0].presentation.velocity) - 1_100.0).abs() < 0.01);
+        assert!(unobstructed.projectiles[0].presentation.velocity[0] < -1_099.0, "an exactly on-axis rocket is itself the deflection aim hit");
+        assert_eq!(off_axis.projectiles[0].presentation.team, team);
+        assert!(off_axis.projectiles[0].presentation.velocity[0] > 1_099.0);
         assert_eq!(
             session.projectiles[1].presentation.velocity,
             [-1_100.0, 0.0, 0.0]
         );
+        assert_eq!(session.projectiles[2].presentation.team, team);
+        assert_eq!(session.projectiles[2].presentation.owner_identity, PLAYER_IDENTITY);
+        assert!(session.projectiles[2].presentation.deflected);
     }
 
     #[test]
@@ -10594,14 +10486,14 @@ mod tests {
                     );
                 }
                 PlayerClass::Demoman => {
-                    assert_eq!(snapshot.weapon, Some(Weapon::Bottle));
+                    assert_eq!(snapshot.weapon, Some(Weapon::GrenadeLauncher));
                     assert_eq!(
                         snapshot
                             .loadout
                             .iter()
                             .map(|weapon| weapon.weapon)
                             .collect::<Vec<_>>(),
-                        vec![Weapon::Bottle],
+                        vec![Weapon::StickybombLauncher, Weapon::Bottle,Weapon::GrenadeLauncher],
                     );
                 }
                 PlayerClass::Heavy => {
@@ -10740,6 +10632,11 @@ mod tests {
 
     fn explosive(kind: ProjectileKind, position: [f32; 3]) -> LiveProjectile {
         LiveProjectile {
+            retiring:false,solid:true,launcher_linked:kind==ProjectileKind::Sticky,prearm_think_tick:None,server_arm_think_tick:None,teammate_collision_enabled:false,
+            rigid_entity_velocity:[0.0;3],
+            full_damage:if kind==ProjectileKind::Grenade {100.0}else{120.0},detonate_time:None,
+            deflect_owner:None,deflected_until:None,
+            minimum_sleep_time:0.0,touched_time:None,in_solid:false,teammate_collision_tick:0,
             killing_weapon: if kind == ProjectileKind::Rocket { "tf_projectile_rocket" } else { "tf_projectile_pipe_remote" },
             gravity_scale: 0.0,
             flare_debris: false,
@@ -10754,11 +10651,12 @@ mod tests {
                 practice_explosion: false,
                 source_weapon: None,
                 launcher_source: None,
-                launcher_weapon: if kind == ProjectileKind::Sticky { Weapon::StickybombLauncher } else if kind == ProjectileKind::Flare { Weapon::Detonator } else { Weapon::RocketLauncher },
+                launcher_weapon: if kind == ProjectileKind::Sticky { Weapon::StickybombLauncher } else if kind==ProjectileKind::Grenade {Weapon::GrenadeLauncher} else if kind == ProjectileKind::Flare { Weapon::Detonator } else { Weapon::RocketLauncher },
                 identity: 99,
                 weapon: match kind {
                     ProjectileKind::Rocket => Weapon::RocketLauncher,
                     ProjectileKind::Sticky => Weapon::StickybombLauncher,
+                    ProjectileKind::Grenade => Weapon::GrenadeLauncher,
                     ProjectileKind::Syringe => Weapon::SyringeGun,
                     ProjectileKind::Flare => Weapon::Detonator,
                 },
@@ -10769,6 +10667,7 @@ mod tests {
                 damage: match kind {
                     ProjectileKind::Rocket => 90.0,
                     ProjectileKind::Sticky => 120.0,
+                    ProjectileKind::Grenade => 60.0,
                     ProjectileKind::Syringe => 10.0,
                     ProjectileKind::Flare => 30.0,
                 },
@@ -10778,6 +10677,7 @@ mod tests {
                 launcher_identity: match kind {
                     ProjectileKind::Rocket => Weapon::RocketLauncher as u32,
                     ProjectileKind::Sticky => Weapon::StickybombLauncher as u32,
+                    ProjectileKind::Grenade => Weapon::GrenadeLauncher as u32,
                     ProjectileKind::Syringe => Weapon::SyringeGun as u32,
                     ProjectileKind::Flare => Weapon::Detonator as u32,
                 },
@@ -10791,72 +10691,52 @@ mod tests {
             },
             armed: true,
             creation_tick: 0,
-            arm_tick: 1,
             next_think_tick: 1,
-            forced_detonate_tick: None,
+            detonate_on_think: false,
             motion_enabled: true,
             direct_target: None,
         }
     }
 
-    // These isolated physics-seam tests supply body results explicitly. They do
-    // not register a weapon in the user-facing equipment inventory.
-    fn admit_sticky_physics_fixture(session: &mut Session<Floor>) {
-        session.weapon = Some(Weapon::StickybombLauncher);
-        session.loadout.insert(Weapon::StickybombLauncher, WeaponRuntime::full(Weapon::StickybombLauncher));
-    }
-
-    fn launch_sticky(tick_interval: f32) -> (Session<Floor>, u32) {
-        let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(tick_interval));
-        session.movement_configuration.tick_interval = tick_interval;
-        session
-            .advance(Command {
-                select_class: Some(PlayerClass::Demoman),
-                select_weapon: Some(Weapon::StickybombLauncher),
-                ..Command::default()
-            })
-            .unwrap();
-        admit_sticky_physics_fixture(&mut session);
-        session
-            .loadout
-            .get_mut(&Weapon::StickybombLauncher)
-            .unwrap()
-            .next_primary_tick = session.tick;
-        session
-            .advance(Command {
-                fire: true,
-                ..Command::default()
-            })
-            .unwrap();
-        let fired = session.advance(Command::default()).unwrap();
-        let projectile = fired.projectiles[0].identity;
-        assert_eq!(
-            session
-                .physics_requests()
-                .iter()
-                .map(|request| request.operation)
-                .collect::<Vec<_>>(),
-            [ProjectilePhysicsOperation::Create]
-        );
-        (session, projectile)
-    }
-
-    fn sticky_result<W: GameplayWorld + Clone>(
-        session: &Session<W>,
-        projectile: u32,
-        position: [f32; 3],
-        contact: Option<ProjectileContact>,
-    ) -> ProjectilePhysicsResult {
-        ProjectilePhysicsResult {
-            projectile,
-            tick: session.tick,
-            position,
-            velocity: [700.0, 50.0, -100.0],
-            orientation: [0.0, 0.0, 0.0, 1.0],
-            angular_velocity: [600.0, 1200.0, 0.0],
-            motion_enabled: true,
-            contact,
+    impl<W: GameplayWorld + Clone> Session<W> {
+        fn explode_fixture(&mut self, projectile: LiveProjectile, projectile_events: &mut Vec<ProjectileEvent>, events: &mut Vec<Event>) -> Result<(), Error> {
+            let entity = entity_queries::Entity::Projectile(projectile.presentation.identity);
+            self.entity_queries.register(entity).map_err(Error::ProjectileTrace)?;
+            self.entity_queries.bind_bounds(entity, projectile.presentation.position, projectile.presentation.kind.entity_hull(), None).map_err(Error::ProjectileTrace)?;
+            self.entity_queries.set_lists(entity, 0x11).map_err(Error::ProjectileTrace)?;
+            self.explode(projectile, projectile_events, events).map(|_| ())
         }
+    }
+
+    #[test]
+    fn pipebomb_rosters_do_not_merge_owners_or_recreated_launchers() {
+        let mut first=explosive(ProjectileKind::Sticky,[0.0;3]);
+        first.presentation.launcher_source=Some(weapon::WeaponSource {owner:PLAYER_IDENTITY,definition_index:20,generation:1});
+        let mut second=first.clone();
+        assert!(first.same_launcher(&second));
+        second.presentation.owner_identity=2;
+        assert!(!first.same_launcher(&second));
+        second=first.clone();
+        second.presentation.launcher_source.as_mut().unwrap().generation=2;
+        assert!(!first.same_launcher(&second));
+        second=first.clone();second.presentation.launcher_identity+=1;
+        assert!(!first.same_launcher(&second));
+    }
+
+    #[test]
+    fn death_resets_the_launcher_without_removing_unlinked_or_regular_grenades() {
+        let mut session=Session::new(Floor,[0.0;3],MapRuntime::empty(0.015));
+        session.advance(Command {select_class:Some(PlayerClass::Demoman),..Command::default()}).unwrap();
+        let mut sticky=explosive(ProjectileKind::Sticky,[0.0;3]);sticky.presentation.identity=10;
+        sticky.presentation.launcher_source=session.weapon_source(PLAYER_IDENTITY,Weapon::StickybombLauncher);
+        let mut unlinked=sticky.clone();unlinked.presentation.identity=11;unlinked.launcher_linked=false;
+        let mut grenade=explosive(ProjectileKind::Grenade,[0.0;3]);grenade.presentation.identity=12;
+        session.projectiles=vec![sticky,unlinked,grenade];
+        let mut events=Vec::new();session.die(&mut events).unwrap();
+        assert_eq!(events.iter().map(|event|(event.projectile,event.kind)).collect::<Vec<_>>(),[(10,ProjectileEventKind::Fizzle)]);
+        assert!(session.projectiles[0].retiring);
+        assert!(!session.projectiles[1].retiring&&!session.projectiles[2].retiring);
+        assert_eq!(session.producer_snapshot().projectiles.iter().map(|value|value.identity).collect::<Vec<_>>(),[11,12]);
     }
 
     #[test]
@@ -10983,7 +10863,6 @@ mod tests {
         let exploded = session
             .advance_with_external(
                 Command::default(),
-                &[],
                 &[RocketTraceResult {
                     projectile: trace.projectile,
                     tick: session.tick,
@@ -11039,7 +10918,6 @@ mod tests {
         let removed = sky
             .advance_with_external(
                 Command::default(),
-                &[],
                 &[RocketTraceResult {
                     projectile: trace.projectile,
                     tick: sky.tick,
@@ -11095,7 +10973,7 @@ mod tests {
             };
             let before_tick = session.tick;
             assert!(matches!(
-                session.advance_with_external(Command::default(), &[], &[result], None),
+                session.advance_with_external(Command::default(), &[result], None),
                 Err(Error::InvalidProjectilePhysics)
             ));
             assert_eq!(session.tick, before_tick);
@@ -11104,7 +10982,6 @@ mod tests {
             let exploded = session
                 .advance_with_external(
                     Command::default(),
-                    &[],
                     &[RocketTraceResult {
                         normal: Some(normal),
                         ..result
@@ -11124,8 +11001,27 @@ mod tests {
 
     #[test]
     fn direct_rocket_damage_drives_button_outputs_and_linked_door_io() {
+        #[derive(Clone)]
+        struct BrushWorld;
+        impl Tracer for BrushWorld {
+            fn trace(&self, start: [f32; 3], end: [f32; 3], hull: Hull, mask: u32) -> Result<Trace, MoveError> { Floor.trace(start, end, hull, mask) }
+        }
+        impl GameplayWorld for BrushWorld {
+            fn overlaps_model_hull(&self, _: usize, _: [f32; 3], _: [f32; 3], _: Hull) -> Result<bool, MoveError> { Ok(false) }
+            fn trace_brush(&self, model: usize, request: playsrc_collision::ObjectTraceRequest) -> Result<Trace, MoveError> {
+                let bounds = match model {
+                    1 => Hull { mins: [-4.0, -16.0, -16.0], maxs: [4.0, 16.0, 16.0] },
+                    2 => Hull { mins: [-8.0, -48.0, -96.0], maxs: [8.0, 48.0, 96.0] },
+                    _ => panic!("fixture brush"),
+                };
+                let hit = playsrc_collision::trace_bounds(request.start, request.end, request.hull,
+                    Hull { mins: add(bounds.mins, request.transform.origin), maxs: add(bounds.maxs, request.transform.origin) }).unwrap();
+                Ok(Trace { fraction: hit.fraction, start_solid: hit.start_solid, all_solid: hit.all_solid, end: hit.end,
+                    normal: hit.plane.map(|plane| plane.normal), hit: (hit.contents != 0).then_some(request.identity), contents: hit.contents })
+            }
+        }
         let graph = playsrc_entity::parse(
-            b"{\"classname\"\"func_button\"\"model\"\"*1\"\"targetname\"\"button\"\"spawnflags\"\"512\"\"OnDamaged\"\"door,Open,,0,-1\"}{\"classname\"\"func_door\"\"model\"\"*2\"\"targetname\"\"door\"\"movedir\"\"-90 0 0\"\"speed\"\"100\"}",
+            b"{\"classname\"\"func_button\"\"model\"\"*1\"\"targetname\"\"button\"\"health\"\"1\"\"spawnflags\"\"512\"\"OnDamaged\"\"door,Open,,0,-1\"}{\"classname\"\"func_door\"\"model\"\"*2\"\"targetname\"\"door\"\"movedir\"\"-90 0 0\"\"speed\"\"100\"}",
             playsrc_entity::Limits::default(),
         )
         .unwrap();
@@ -11147,7 +11043,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let mut session = Session::new(Floor, [0.0; 3], map);
+        let mut session = Session::new(BrushWorld, [0.0; 3], map);
         session
             .loadout
             .get_mut(&Weapon::RocketLauncher)
@@ -11171,11 +11067,10 @@ mod tests {
         let damaged = session
             .advance_with_external(
                 Command::default(),
-                &[],
                 &[RocketTraceResult {
                     projectile: request.projectile,
                     tick: session.tick,
-                    end: request.end,
+                    end: [5.0, 0.0, 0.0],
                     solid: true,
                     sky: false,
                     normal: Some([0.0, 0.0, 1.0]),
@@ -11193,6 +11088,7 @@ mod tests {
             [ProjectileEventKind::Impact, ProjectileEventKind::Explode]
         );
         assert_eq!(session.radius_damage_requests()[0].direct_target, Some(0));
+        assert_eq!(damaged.entity_events.iter().filter(|event| event.kind == EntityEventKind::Output && event.entity == 0 && event.name == b"OnDamaged").count(), 1);
         let on_damaged = damaged
             .entity_events
             .iter()
@@ -11246,7 +11142,7 @@ mod tests {
             session.movement.velocity = [0.0; 3];
             let origin = session.movement.position;
             session
-                .explode(
+                .explode_fixture(
                     explosive(ProjectileKind::Rocket, origin),
                     &mut Vec::new(),
                     &mut Vec::new(),
@@ -11284,7 +11180,7 @@ mod tests {
         assert_eq!(direct.player_flags & FL_INWATER, 0);
         direct_submersion.movement.velocity = [0.0; 3];
         direct_submersion
-            .explode(
+            .explode_fixture(
                 explosive(ProjectileKind::Rocket, direct_submersion.movement.position),
                 &mut Vec::new(),
                 &mut Vec::new(),
@@ -11311,7 +11207,7 @@ mod tests {
         );
         wading.movement.velocity = [0.0; 3];
         wading
-            .explode(
+            .explode_fixture(
                 explosive(ProjectileKind::Rocket, wading.movement.position),
                 &mut Vec::new(),
                 &mut Vec::new(),
@@ -11349,7 +11245,7 @@ mod tests {
         submerged.movement.velocity = [0.0; 3];
         let explosion = submerged.movement.position;
         submerged
-            .explode(
+            .explode_fixture(
                 explosive(ProjectileKind::Rocket, explosion),
                 &mut Vec::new(),
                 &mut Vec::new(),
@@ -11396,7 +11292,7 @@ mod tests {
         let mut projectile_events = Vec::new();
         let mut events = Vec::new();
         grounded
-            .explode(
+            .explode_fixture(
                 explosive(ProjectileKind::Rocket, [0.0; 3]),
                 &mut projectile_events,
                 &mut events,
@@ -11409,7 +11305,7 @@ mod tests {
 
         let mut airborne = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
         airborne
-            .explode(
+            .explode_fixture(
                 explosive(ProjectileKind::Rocket, [0.0; 3]),
                 &mut Vec::new(),
                 &mut Vec::new(),
@@ -11430,7 +11326,7 @@ mod tests {
             policy,
         );
         crouched
-            .explode(
+            .explode_fixture(
                 explosive(ProjectileKind::Rocket, [0.0; 3]),
                 &mut Vec::new(),
                 &mut Vec::new(),
@@ -11460,18 +11356,14 @@ mod tests {
             },
             demo_policy,
         );
-        demo.explode(
-            explosive(ProjectileKind::Sticky, [0.0; 3]),
-            &mut Vec::new(),
-            &mut Vec::new(),
-        )
-        .unwrap();
+        let sticky=explosive(ProjectileKind::Sticky,[0.0;3]);
+        demo.apply_self_blast(&sticky.presentation,sticky.killing_weapon,0,&mut Vec::new()).unwrap();
         assert_eq!(demo.health, 85);
         assert_eq!(demo.movement.velocity[2], 810.0);
     }
 
     #[test]
-    fn sticky_launch_uses_exact_stream_order_and_typed_physics_results() {
+    fn sticky_launch_without_rigid_admission_rolls_back_ammo_random_and_publication() {
         let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.01));
         session
             .advance(Command {
@@ -11480,7 +11372,7 @@ mod tests {
                 ..Command::default()
             })
             .unwrap();
-        admit_sticky_physics_fixture(&mut session);
+        assert_eq!(session.weapon,Some(Weapon::StickybombLauncher));
         session
             .loadout
             .get_mut(&Weapon::StickybombLauncher)
@@ -11500,7 +11392,6 @@ mod tests {
             session.advance_with_external(
                 Command::default(),
                 &[],
-                &[],
                 Some(StickyLaunchRandom {
                     right_velocity: 0.0,
                     up_velocity: 0.0,
@@ -11512,370 +11403,10 @@ mod tests {
         assert_eq!(session.producer_snapshot(), producer_before);
         assert_eq!(session.random_state(), random_before);
 
-        let fired = session.advance(Command::default()).unwrap();
-        assert_eq!(fired.projectiles.len(), 1);
-        let projectile = fired.projectiles[0].clone();
-        assert_eq!(projectile.velocity[0], 905.625);
-        assert_eq!(projectile.velocity[1].to_bits(), 0xc045_042c);
-        assert_eq!(projectile.velocity[2], 200.0 + f32::from_bits(0xc10a_9c49));
-        assert_eq!(projectile.angular_velocity, [600.0, -563.0, 0.0]);
-        assert_eq!(session.audio_events().len(), 1);
-        let sound = session.audio_events()[0];
-        assert_eq!(sound.identity, AudioEventIdentity::WeaponSingle);
-        assert_eq!(sound.definition, SoundDefinition::StickySingle);
-        assert_eq!(sound.source_identity, PLAYER_IDENTITY);
-        assert_eq!(sound.samples.volume.to_bits(), 0x3f07_9a6f);
-        assert_eq!(sound.samples.pitch.to_bits(), 0x3f6e_3116);
-        assert_eq!(sound.samples.wave, 0);
-        assert_eq!(sound.samples.sound_level.to_bits(), 0x3ec4_5a62);
-        assert_eq!(
-            session
-                .random_draws()
-                .iter()
-                .filter(|draw| draw.context == RandomContext::Authority)
-                .map(|draw| draw.decision)
-                .collect::<Vec<_>>(),
-            [
-                RandomDecision::SoundVolume {
-                    definition: SoundDefinition::StickySingle,
-                    phase: SoundQueryPhase::Inspect,
-                },
-                RandomDecision::SoundPitch {
-                    definition: SoundDefinition::StickySingle,
-                    phase: SoundQueryPhase::Inspect,
-                },
-                RandomDecision::SoundLevel {
-                    definition: SoundDefinition::StickySingle,
-                    phase: SoundQueryPhase::Inspect,
-                },
-                RandomDecision::SoundVolume {
-                    definition: SoundDefinition::StickySingle,
-                    phase: SoundQueryPhase::Emit,
-                },
-                RandomDecision::SoundPitch {
-                    definition: SoundDefinition::StickySingle,
-                    phase: SoundQueryPhase::Emit,
-                },
-                RandomDecision::SoundLevel {
-                    definition: SoundDefinition::StickySingle,
-                    phase: SoundQueryPhase::Emit,
-                },
-                RandomDecision::StickyRightVelocity,
-                RandomDecision::StickyUpVelocity,
-                RandomDecision::StickyAngularY,
-            ]
-        );
-        assert!(session.physics_requests().iter().any(|request| {
-            request.operation == ProjectilePhysicsOperation::Create
-                && request.projectile == projectile.identity
-                && request.hull.mins == [-2.0; 3]
-                && request.gravity_scale == 0.4
-                && request.friction == 0.2
-                && request.elasticity == 0.45
-        }));
-
-        let contact = session
-            .advance_with_external(
-                Command::default(),
-                &[ProjectilePhysicsResult {
-                    projectile: projectile.identity,
-                    tick: session.tick,
-                    position: [16.0, 0.0, -2.0],
-                    velocity: [700.0, 50.0, -100.0],
-                    orientation: [0.0, 0.0, 0.0, 1.0],
-                    angular_velocity: [600.0, 1200.0, 0.0],
-                    motion_enabled: true,
-                    contact: Some(ProjectileContact {
-                        kind: ProjectileContactKind::World,
-                        normal: [0.0, 0.0, 1.0],
-                    }),
-                }],
-                &[],
-                None,
-            )
-            .unwrap();
-        assert_eq!(contact.projectiles[0].state, ProjectileState::StuckUnarmed);
-        assert_eq!(
-            contact
-                .projectile_events
-                .iter()
-                .map(|event| event.kind)
-                .collect::<Vec<_>>(),
-            [ProjectileEventKind::Impact, ProjectileEventKind::Stick]
-        );
-        assert!(session.physics_requests().iter().any(|request| {
-            request.operation == ProjectilePhysicsOperation::DisableMotion
-                && request.projectile == projectile.identity
-        }));
-        let stuck = session.producer_snapshot();
-        assert!(matches!(
-            session.advance_with_external(
-                Command::default(),
-                &[ProjectilePhysicsResult {
-                    projectile: projectile.identity,
-                    tick: session.tick,
-                    position: [f32::NAN, 0.0, 0.0],
-                    velocity: [0.0; 3],
-                    orientation: [0.0, 0.0, 0.0, 1.0],
-                    angular_velocity: [0.0; 3],
-                    motion_enabled: false,
-                    contact: None,
-                }],
-                &[],
-                None,
-            ),
-            Err(Error::InvalidProjectilePhysics)
-        ));
-        assert_eq!(session.producer_snapshot(), stuck);
-    }
-
-    #[test]
-    fn sticky_requires_ordered_results_before_flying_arm_state_advances() {
-        let (mut session, projectile) = launch_sticky(0.4);
-        let before = session.producer_snapshot();
-        assert!(matches!(
-            session.advance(Command::default()),
-            Err(Error::InvalidProjectilePhysics)
-        ));
-        assert_eq!(session.producer_snapshot(), before);
-
-        let first = sticky_result(&session, projectile, [10.0, 0.0, 20.0], None);
-        let flying = session
-            .advance_with_external(Command::default(), &[first], &[], None)
-            .unwrap();
-        assert_eq!(flying.projectiles[0].age_seconds, 0.4);
-        assert_eq!(flying.projectiles[0].state, ProjectileState::Flying);
-        assert!(flying.projectile_events.is_empty());
-        assert_eq!(
-            session
-                .physics_requests()
-                .iter()
-                .map(|request| request.operation)
-                .collect::<Vec<_>>(),
-            [ProjectilePhysicsOperation::Step]
-        );
-
-        let second = sticky_result(&session, projectile, [20.0, 1.0, 15.0], None);
-        let armed = session
-            .advance_with_external(Command::default(), &[second], &[], None)
-            .unwrap();
-        assert_eq!(armed.projectiles[0].age_seconds, 0.8);
-        assert_eq!(armed.projectiles[0].state, ProjectileState::Flying);
-        assert_eq!(armed.projectiles[0].contact_normal, None);
-        assert_eq!(armed.projectile_events.len(), 1);
-        assert_eq!(armed.projectile_events[0].kind, ProjectileEventKind::Arm);
-        assert_eq!(armed.projectile_events[0].contact_normal, None);
-    }
-
-    #[test]
-    fn sticky_rejects_stale_duplicate_reordered_unsolicited_and_malformed_results() {
-        let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.1));
-        session.tick = 1;
-        let mut first = explosive(ProjectileKind::Sticky, [0.0; 3]);
-        first.presentation.identity = 10;
-        first.armed = false;
-        first.arm_tick = 100;
-        let mut second = first.clone();
-        second.presentation.identity = 20;
-        session.projectiles = vec![first.clone(), second.clone()];
-        session.physics_requests = vec![
-            sticky_physics_request(ProjectilePhysicsOperation::Step, &first, 0),
-            sticky_physics_request(ProjectilePhysicsOperation::Step, &second, 0),
-        ];
-        let first_result = sticky_result(&session, 10, [1.0, 0.0, 0.0], None);
-        let second_result = sticky_result(&session, 20, [2.0, 0.0, 0.0], None);
-        let before = session.producer_snapshot();
-
-        for invalid in [
-            vec![first_result],
-            vec![second_result, first_result],
-            vec![first_result, first_result],
-            vec![
-                ProjectilePhysicsResult {
-                    tick: 0,
-                    ..first_result
-                },
-                second_result,
-            ],
-            vec![
-                ProjectilePhysicsResult {
-                    motion_enabled: false,
-                    ..first_result
-                },
-                second_result,
-            ],
-            vec![
-                ProjectilePhysicsResult {
-                    contact: Some(ProjectileContact {
-                        kind: ProjectileContactKind::Other,
-                        normal: [0.0; 3],
-                    }),
-                    ..first_result
-                },
-                second_result,
-            ],
-        ] {
-            assert!(matches!(
-                session.advance_with_external(Command::default(), &invalid, &[], None),
-                Err(Error::InvalidProjectilePhysics)
-            ));
-            assert_eq!(session.producer_snapshot(), before);
-        }
-
-        let mut unsolicited = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.1));
-        let result = sticky_result(&unsolicited, 10, [1.0, 0.0, 0.0], None);
-        assert!(matches!(
-            unsolicited.advance_with_external(Command::default(), &[result], &[], None),
-            Err(Error::InvalidProjectilePhysics)
-        ));
-    }
-
-    #[test]
-    fn sticky_bounce_dynamic_stick_arm_and_remote_detonation_preserve_order() {
-        let (mut session, projectile) = launch_sticky(0.4);
-        let bounce = sticky_result(
-            &session,
-            projectile,
-            [10.0, 0.0, 20.0],
-            Some(ProjectileContact {
-                kind: ProjectileContactKind::Other,
-                normal: [0.0, 1.0, 0.0],
-            }),
-        );
-        let bounced = session
-            .advance_with_external(Command::default(), &[bounce], &[], None)
-            .unwrap();
-        assert_eq!(bounced.projectiles[0].state, ProjectileState::Flying);
-        assert_eq!(bounced.projectiles[0].contact_normal, None);
-        assert_eq!(bounced.projectile_events.len(), 1);
-        assert_eq!(
-            bounced.projectile_events[0].kind,
-            ProjectileEventKind::Impact
-        );
-        assert_eq!(
-            bounced.projectile_events[0].contact_normal,
-            Some([0.0, 1.0, 0.0])
-        );
-
-        let contact = sticky_result(
-            &session,
-            projectile,
-            [20.0, 1.0, 15.0],
-            Some(ProjectileContact {
-                kind: ProjectileContactKind::DynamicProp,
-                normal: [0.0, 0.0, 1.0],
-            }),
-        );
-        let stuck = session
-            .advance_with_external(Command::default(), &[contact], &[], None)
-            .unwrap();
-        assert_eq!(stuck.projectiles[0].state, ProjectileState::StuckArmed);
-        assert_eq!(stuck.projectiles[0].contact_normal, Some([0.0, 0.0, 1.0]));
-        assert_eq!(
-            stuck
-                .projectile_events
-                .iter()
-                .map(|event| event.kind)
-                .collect::<Vec<_>>(),
-            [
-                ProjectileEventKind::Impact,
-                ProjectileEventKind::Stick,
-                ProjectileEventKind::Arm
-            ]
-        );
-        assert_eq!(
-            session
-                .physics_requests()
-                .iter()
-                .map(|request| request.operation)
-                .collect::<Vec<_>>(),
-            [ProjectilePhysicsOperation::DisableMotion]
-        );
-
-        let exploded = session
-            .advance(Command {
-                detonate: true,
-                ..Command::default()
-            })
-            .unwrap();
-        assert!(exploded.projectiles.is_empty());
-        assert_eq!(
-            exploded.projectile_events[0].kind,
-            ProjectileEventKind::Explode
-        );
-        assert_eq!(
-            session
-                .physics_requests()
-                .iter()
-                .map(|request| request.operation)
-                .collect::<Vec<_>>(),
-            [ProjectilePhysicsOperation::Destroy]
-        );
-    }
-
-    #[test]
-    fn sticky_fizzle_and_oldest_bomb_cleanup_emit_current_physics_requests() {
-        let (mut fizzle, projectile) = launch_sticky(0.4);
-        let result = sticky_result(&fizzle, projectile, [10.0, 0.0, 20.0], None);
-        let fizzled = fizzle
-            .advance_with_external(
-                Command {
-                    select_team: Some(PlayerTeam::Blue),
-                    ..Command::default()
-                },
-                &[result],
-                &[],
-                None,
-            )
-            .unwrap();
-        assert!(fizzled.projectiles.is_empty());
-        assert_eq!(
-            fizzled.projectile_events[0].kind,
-            ProjectileEventKind::Fizzle
-        );
-        assert_eq!(
-            fizzle
-                .physics_requests()
-                .iter()
-                .map(|request| (request.operation, request.projectile))
-                .collect::<Vec<_>>(),
-            [(ProjectilePhysicsOperation::Destroy, projectile)]
-        );
-
-        let mut oldest = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.2));
-        oldest.class = PlayerClass::Demoman;
-        oldest.weapon = Some(Weapon::StickybombLauncher);
-        oldest.loadout = default_loadout(PlayerClass::Demoman);
-        for identity in 1..=8 {
-            let mut sticky = explosive(ProjectileKind::Sticky, [identity as f32, 0.0, 0.0]);
-            sticky.presentation.identity = identity;
-            oldest.projectiles.push(sticky);
-        }
-        oldest.next_projectile = 9;
-        let mut events = Vec::new();
-        oldest
-            .fire_projectile(0.0, 0.0, 0.0, None, None, &mut events)
-            .unwrap();
-        assert_eq!(oldest.projectiles[0].forced_detonate_tick, Some(0));
-        assert_eq!(oldest.projectiles.last().unwrap().presentation.identity, 9);
-        oldest.tick = 1;
-        oldest
-            .advance_projectiles(0.2, &mut events, &mut Vec::new())
-            .unwrap();
-        assert!(
-            oldest
-                .projectiles
-                .iter()
-                .all(|sticky| sticky.presentation.identity != 1)
-        );
-        assert!(
-            events.iter().any(|event| {
-                event.kind == ProjectileEventKind::Explode && event.projectile == 1
-            })
-        );
-        assert!(oldest.physics_requests().iter().any(|request| {
-            request.operation == ProjectilePhysicsOperation::Destroy && request.projectile == 1
-        }));
+        assert!(matches!(session.advance(Command::default()),Err(Error::MissingRigidResources)));
+        assert_eq!(session.producer_snapshot(),producer_before);
+        assert_eq!(session.random_state(),random_before);
+        assert_eq!(session.weapon_runtime(Weapon::StickybombLauncher).unwrap(),before);
     }
 
     #[test]
@@ -12025,7 +11556,6 @@ mod tests {
                     select_class: Some(PlayerClass::Demoman),
                     ..Command::default()
                 },
-                &[],
                 &[RocketTraceResult {
                     projectile: request.projectile,
                     tick: session.tick,
@@ -12120,16 +11650,15 @@ mod tests {
     }
 
     #[test]
-    fn lethal_state_waits_for_explicit_respawn_and_cleans_owned_projectiles() {
+    fn lethal_state_and_same_class_respawn_preserve_in_flight_rockets() {
         let mut session = Session::new(Floor, [8.0, 4.0, 2.0], MapRuntime::empty(0.01));
         session.movement_configuration.tick_interval = 0.01;
         session.health = 0;
         session
             .projectiles
             .push(explosive(ProjectileKind::Rocket, [0.0; 3]));
-        session
-            .projectiles
-            .push(explosive(ProjectileKind::Sticky, [0.0; 3]));
+        let mut second=explosive(ProjectileKind::Rocket,[0.0;3]);second.presentation.identity=2;
+        session.projectiles.push(second);
         let dead = session
             .advance(Command {
                 fire: true,
@@ -12138,14 +11667,8 @@ mod tests {
             .unwrap();
         assert_eq!(dead.health, 0.0);
         assert_eq!(session.lifecycle(), PlayerLifecycle::Dying);
-        assert!(dead.projectiles.is_empty());
-        assert_eq!(
-            dead.projectile_events
-                .iter()
-                .map(|event| event.kind)
-                .collect::<Vec<_>>(),
-            [ProjectileEventKind::Fizzle, ProjectileEventKind::Fizzle]
-        );
+        assert_eq!(dead.projectiles.len(),2);
+        assert!(dead.projectile_events.is_empty());
         assert!(
             session
                 .lifecycle_events()
@@ -12153,15 +11676,18 @@ mod tests {
                 .any(|event| { event.kind == LifecycleEventKind::Died })
         );
 
+        let traces=session.rocket_trace_requests().iter().map(|request|RocketTraceResult {projectile:request.projectile,tick:session.tick,end:request.end,solid:false,sky:false,normal:None,direct_target:None}).collect::<Vec<_>>();
         let respawned = session
-            .advance(Command {
+            .advance_with_external(Command {
                 respawn: true,
                 fire: true,
                 ..Command::default()
-            })
+            },&traces,None)
             .unwrap();
         assert_eq!(session.lifecycle(), PlayerLifecycle::Active);
         assert_eq!(respawned.health, 200.0);
+        assert_eq!(respawned.projectiles.len(),2);
+        assert!(respawned.projectile_events.is_empty());
         assert_eq!(respawned.movement.position, [8.0, 4.0, 2.0]);
         assert!(
             session
@@ -12360,7 +11886,6 @@ mod tests {
         let impact = session
             .advance_with_external(
                 Command::default(),
-                &[],
                 &[RocketTraceResult {
                     projectile: request.projectile,
                     tick: session.tick,
@@ -12426,7 +11951,6 @@ mod tests {
                         fire: true,
                         ..Command::default()
                     },
-                    &[],
                     &rocket_results,
                     None,
                 )

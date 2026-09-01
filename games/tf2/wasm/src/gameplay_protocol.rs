@@ -1,30 +1,16 @@
 pub(crate) const HEADER_BYTES: usize = 84;
-const PHYSICS_RESULT_BYTES: usize = 80;
-const MAX_RESULTS: usize = 64;
-
-pub struct AdvanceInput {
-    pub command: playsrc_tf2::Command,
-    pub physics_results: Vec<playsrc_tf2::ProjectilePhysicsResult>,
-}
-
-pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
-    if bytes.len() < HEADER_BYTES
-        || bytes.len() > 64 * 1024
+pub fn decode(bytes: &[u8]) -> Option<playsrc_tf2::Command> {
+    if bytes.len() != HEADER_BYTES
         || &bytes[..4] != b"PCMD"
-        || u32::from_le_bytes(bytes[4..8].try_into().ok()?) != 9
+        || u32::from_le_bytes(bytes[4..8].try_into().ok()?) != 10
     {
         return None;
     }
-    let physics_count = usize::from(u16::from_le_bytes(bytes[40..42].try_into().ok()?));
     let bot_flags = u16::from_le_bytes(bytes[42..44].try_into().ok()?);
     let packed_bot = bot_flags & 0x7fff;
-    if physics_count > MAX_RESULTS
+    if bytes[40..42] != [0,0]
         || u32::from_le_bytes(bytes[48..52].try_into().ok()?) as usize != bytes.len()
     {
-        return None;
-    }
-    let expected = HEADER_BYTES.checked_add(physics_count.checked_mul(PHYSICS_RESULT_BYTES)?)?;
-    if expected != bytes.len() {
         return None;
     }
 
@@ -329,97 +315,5 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
         return None;
     }
 
-    let mut reader = Reader {
-        bytes,
-        offset: HEADER_BYTES,
-    };
-    let mut physics_results = Vec::with_capacity(physics_count);
-    for _ in 0..physics_count {
-        let projectile = reader.u32()?;
-        let tick = reader.u64()?;
-        let motion_enabled = reader.u8()?;
-        let contact_kind = reader.u8()?;
-        if motion_enabled > 1 || contact_kind > 3 || reader.u16()? != 0 {
-            return None;
-        }
-        let position = reader.vector()?;
-        let velocity = reader.vector()?;
-        let orientation = reader.quaternion()?;
-        let angular_velocity = reader.vector()?;
-        let normal = reader.vector()?;
-        let contact = match contact_kind {
-            0 if normal == [0.0; 3] => None,
-            1 => Some(playsrc_tf2::ProjectileContact {
-                kind: playsrc_tf2::ProjectileContactKind::World,
-                normal,
-            }),
-            2 => Some(playsrc_tf2::ProjectileContact {
-                kind: playsrc_tf2::ProjectileContactKind::DynamicProp,
-                normal,
-            }),
-            3 => Some(playsrc_tf2::ProjectileContact {
-                kind: playsrc_tf2::ProjectileContactKind::Other,
-                normal,
-            }),
-            _ => return None,
-        };
-        physics_results.push(playsrc_tf2::ProjectilePhysicsResult {
-            projectile,
-            tick,
-            position,
-            velocity,
-            orientation,
-            angular_velocity,
-            motion_enabled: motion_enabled != 0,
-            contact,
-        });
-    }
-
-    (reader.offset == bytes.len()).then_some(AdvanceInput {
-        command,
-        physics_results,
-    })
-}
-
-struct Reader<'a> {
-    bytes: &'a [u8],
-    offset: usize,
-}
-
-impl Reader<'_> {
-    fn take<const N: usize>(&mut self) -> Option<[u8; N]> {
-        let end = self.offset.checked_add(N)?;
-        let value = self.bytes.get(self.offset..end)?.try_into().ok()?;
-        self.offset = end;
-        Some(value)
-    }
-
-    fn u8(&mut self) -> Option<u8> {
-        Some(self.take::<1>()?[0])
-    }
-
-    fn u16(&mut self) -> Option<u16> {
-        Some(u16::from_le_bytes(self.take()?))
-    }
-
-    fn u32(&mut self) -> Option<u32> {
-        Some(u32::from_le_bytes(self.take()?))
-    }
-
-    fn u64(&mut self) -> Option<u64> {
-        Some(u64::from_le_bytes(self.take()?))
-    }
-
-    fn f32(&mut self) -> Option<f32> {
-        let value = f32::from_le_bytes(self.take()?);
-        value.is_finite().then_some(value)
-    }
-
-    fn vector(&mut self) -> Option<[f32; 3]> {
-        Some([self.f32()?, self.f32()?, self.f32()?])
-    }
-
-    fn quaternion(&mut self) -> Option<[f32; 4]> {
-        Some([self.f32()?, self.f32()?, self.f32()?, self.f32()?])
-    }
+    Some(command)
 }

@@ -437,7 +437,7 @@ fn main() -> Result<(), String> {
     if hex(&studio::content_sha256(&graph_bytes)) != RESOURCE_GRAPH_SHA256 {
         return Err("configured resource graph identity changed".to_owned());
     }
-    let bundle_bytes = playsrc_asset_graph::read_resource_set(&graph_path, None)
+    let bundle_bytes = playsrc_asset_graph::read_resource_set(&graph_path, &cache.join("browser-bundles/jump_beef.graph/objects"), None)
         .map_err(|error| format!("configured resource graph failed: {error:?}"))?;
     let files = parse_bundle(&bundle_bytes)?;
     let vpk_files = VpkFiles::new(Path::new(&config.tf2_dir))?;

@@ -612,6 +612,7 @@ struct Bot {
 
 #[derive(Clone, Debug)]
 pub struct BotWorld {
+    query_changes: Vec<QueryChange>,
     scheduler: locomotion::Scheduler,
     mesh: Arc<Mesh>,
     spawns: [Vec<Spawn>; 2],
@@ -629,6 +630,12 @@ pub struct BotWorld {
     round_winner: Option<PlayerTeam>,
     navigation_recompute_at: Option<f32>,
     had_bots: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum QueryChange {
+    State { identity: u32, origin: [f32; 3], solid: bool },
+    Remove(u32),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -768,6 +775,7 @@ impl BotWorld {
             had_bots: false,
             bots: BTreeMap::new(),
             scheduler: locomotion::Scheduler::default(),
+            query_changes: Vec::new(),
             next_identity: crate::PLAYER_IDENTITY + 1,
             next_name: None,
             tick_interval,
@@ -787,6 +795,10 @@ impl BotWorld {
 
     pub fn is_empty(&self) -> bool {
         self.bots.is_empty()
+    }
+
+    pub(crate) fn take_query_changes(&mut self) -> Vec<QueryChange> {
+        std::mem::take(&mut self.query_changes)
     }
 
     pub(crate) fn roster(&self) -> impl ExactSizeIterator<Item = crate::team_selection::RosterPlayer> + '_ {
@@ -921,6 +933,7 @@ impl BotWorld {
         });
         if let Some(identity) = identity {
             self.bots.remove(&identity);
+            self.query_changes.push(QueryChange::Remove(identity));
             return Ok(true);
         }
         Ok(false)
@@ -952,6 +965,7 @@ impl BotWorld {
                 tick,
                 self.tick_interval,
             );
+            self.query_changes.push(QueryChange::State { identity: bot.identity, origin: bot.movement.position, solid: true });
             self.scheduler.reset(bot.identity);
         }
         Ok(())
@@ -1027,6 +1041,7 @@ impl BotWorld {
         if bot.health.current == 0 {
             bot.lifecycle = PlayerLifecycle::Dying;
             bot.afterburn = None;
+            self.query_changes.push(QueryChange::State { identity, origin: bot.movement.position, solid: false });
         }
         true
     }
@@ -1057,6 +1072,7 @@ impl BotWorld {
         if bot.health.current == 0 {
             bot.lifecycle = PlayerLifecycle::Dying;
             bot.afterburn = None;
+            self.query_changes.push(QueryChange::State { identity, origin: bot.movement.position, solid: false });
             bot.conditions.remove(ConditionId::BURNING, true);
             bot.conditions.remove(ConditionId::HEALING_DEBUFF, true);
         } else {
@@ -1176,10 +1192,12 @@ impl BotWorld {
     ) -> Result<(), Error> {
         match request.operation {
             Operation::KickAll => {
+                self.query_changes.extend(self.bots.keys().copied().map(QueryChange::Remove));
                 self.bots.clear();
                 return Ok(());
             }
             Operation::KickTeam(team) => {
+                self.query_changes.extend(self.bots.values().filter(|bot| bot.team == team).map(|bot| QueryChange::Remove(bot.identity)));
                 self.bots.retain(|_, bot| bot.team != team);
                 return Ok(());
             }
@@ -1322,6 +1340,7 @@ impl BotWorld {
                 },
             );
             crate::admission_metrics::emit(crate::admission_metrics::CONSTRUCTED, identity);
+            self.query_changes.push(QueryChange::State { identity, origin: self.bots[&identity].movement.position, solid: true });
         }
         Ok(())
     }
@@ -1370,6 +1389,7 @@ impl BotWorld {
                         )
                         .map_err(|_| Error::Limit)? as usize };
                     respawn_bot(bot, candidates[choice], mesh, tick, self.tick_interval);
+                    world.actor_query_state(bot.identity, bot.movement.position, true).map_err(Error::Movement)?;
                     self.scheduler.reset(bot.identity);
                 }
                 continue;
@@ -1641,6 +1661,7 @@ impl BotWorld {
             )
             .map_err(Error::Movement)?;
             bot.movement = movement.state;
+            world.actor_query_state(bot.identity, bot.movement.position, bot.health.current > 0 && !bot.conditions.contains(ConditionId::GHOST)).map_err(Error::Movement)?;
             if bot.blast_since_movement && movement.ground_detach_by_upward_speed {
                 bot.blast_jump_state = true;
                 bot.conditions.add(ConditionId::new(81).unwrap(), crate::condition::ConditionDuration::Permanent, None, true, false).unwrap();
@@ -1703,10 +1724,7 @@ impl BotWorld {
                     });
                 }
             }
-            if active_weapon != Weapon::Minigun && (!in_range || state.clip == 0) {
-                state.start_reload(tick, self.tick_interval, &mut activities);
-            }
-            state.advance_reload(tick, self.tick_interval, &mut activities, &mut ammo);
+            state.reload_frame(tick,self.tick_interval,active_weapon!=Weapon::Minigun&&(!in_range||state.clip==0),&mut activities,&mut ammo);
         }
         Ok(attacks)
     }
@@ -1770,18 +1788,6 @@ impl BotWorld {
         Some(crate::melee::Actor { class: bot.class, team: bot.team, position: bot.movement.position, eye: bot_eye(bot),
             center: crate::add(bot.movement.position, crate::scale(crate::add(hull.mins, hull.maxs), 0.5)),
             hull, health: bot.health.current, maximum_health: bot.health.maximum })
-    }
-
-    /// MASK_SOLID melee clips player collision hulls, including teammates.
-    pub fn melee_trace(&self, owner: u32, start: [f32; 3], end: [f32; 3], hull: Hull, maximum_fraction: f32) -> Option<(u32, f32, [f32; 3])> {
-        self.bots.values().filter(|bot| bot.identity != owner && bot.lifecycle == PlayerLifecycle::Active && bot.health.current > 0)
-            .filter_map(|bot| {
-                let bounds = bot.movement.active_hull(MovementPolicy { class: bot.class, modifiers: MovementModifiers::default() }.resolve());
-                let mins = std::array::from_fn(|axis| bot.movement.position[axis] + bounds.mins[axis] - hull.maxs[axis]);
-                let maxs = std::array::from_fn(|axis| bot.movement.position[axis] + bounds.maxs[axis] - hull.mins[axis]);
-                let fraction = crate::ray_box_fraction(start, end, mins, maxs)?;
-                (fraction <= maximum_fraction).then_some((bot.identity, fraction, crate::add(start, crate::scale(crate::sub(end, start), fraction))))
-            }).min_by(|left, right| left.1.total_cmp(&right.1).then_with(|| left.0.cmp(&right.0)))
     }
 
     pub fn advance_health(&mut self, now: f32) -> Result<(), Error> {
@@ -2001,6 +2007,7 @@ impl BotWorld {
         }
         let bot = self.bots.get_mut(&identity).ok_or(Error::InvalidEntity)?;
         bot.movement.position = position;
+        self.query_changes.push(QueryChange::State { identity: bot.identity, origin: position, solid: bot.lifecycle == PlayerLifecycle::Active && bot.health.current > 0 && !bot.conditions.contains(ConditionId::GHOST) });
         bot.movement.ground = None;
         bot.pitch_degrees = pitch_degrees;
         bot.yaw_degrees = yaw_degrees;
@@ -2069,6 +2076,7 @@ impl BotWorld {
         let killed = result.death.is_some();
         if killed {
             victim.lifecycle = PlayerLifecycle::Dying;
+            self.query_changes.push(QueryChange::State { identity: victim.identity, origin: victim.movement.position, solid: false });
             victim.conditions.remove_all();
             victim.afterburn = None;
             victim.deaths = victim.deaths.saturating_add(1);
@@ -2103,6 +2111,7 @@ impl BotWorld {
         self.bots.values().map(|bot| format!("bot={} area={:?} feet={:?} goal={:?} path={:?} crossing={:?} surfaces={:?}",bot.identity,bot.current_area,bot.movement.position,bot.goal,&bot.path[bot.path_index..bot.path.len().min(bot.path_index+4)],bot.crossing,bot.path[bot.path_index..bot.path.len().min(bot.path_index+2)].iter().filter_map(|id|self.mesh.area(*id)).map(|a|(a.identity,a.northwest,a.southeast,a.northeast_z,a.southwest_z,a.attributes,a.game_attributes,&a.connections)).collect::<Vec<_>>())).collect()
     }
     pub(crate) fn position(&self, identity: u32) -> Option<[f32; 3]> { self.bots.get(&identity).map(|bot| bot.movement.position) }
+    pub(crate) fn eye_position(&self, identity: u32) -> Option<[f32; 3]> { self.bots.get(&identity).map(|bot| crate::add(bot.movement.position, bot.movement.view_offset)) }
     pub(crate) fn take_health(&mut self, identity: u32, amount: f32, multiplier: f32) -> Result<i32, Error> {
         let Some(bot) = self.bots.get_mut(&identity) else { return Ok(0); };
         if bot.health.current <= 0 { return Ok(0); }
@@ -2148,7 +2157,11 @@ impl BotWorld {
     pub fn advance_conditions(&mut self, now: f32) {
         for bot in self.bots.values_mut() {
             if bot.lifecycle != PlayerLifecycle::Active { bot.conditions.remove_all(); continue; }
+            let was_ghost = bot.conditions.contains(ConditionId::GHOST);
             bot.conditions.advance(self.tick_interval, bot.health.healers.len()).expect("valid bot condition tick");
+            if was_ghost && !bot.conditions.contains(ConditionId::GHOST) {
+                self.query_changes.push(QueryChange::State { identity: bot.identity, origin: bot.movement.position, solid: bot.health.current > 0 });
+            }
             if bot.movement_stuns.active() {
                 if !bot.movement_stuns.think(now) { bot.conditions.remove(ConditionId::STUNNED, true); }
                 bot.conditions.set_active_stun_flags(bot.movement_stuns.flags());
@@ -3451,9 +3464,36 @@ fn vector(entity: &Entity, key: &[u8]) -> Option<[f32; 3]> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use playsrc_movement::{Error as MoveError, Trace, Tracer};
+
+    #[test]
+    fn ghost_expiry_restores_query_solidity_before_another_movement_update() {
+        let mut world = BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
+        let mut random = UniformRandomStream::from_seed(7).unwrap();
+        world.apply(Request { operation: Operation::Add, count: 1, class: Some(PlayerClass::Scout),
+            team: Some(PlayerTeam::Red), difficulty: Difficulty::Normal }, PlayerTeam::Blue, PlayerClass::Soldier, &mut random).unwrap();
+        world.take_query_changes();
+        let bot = world.bots.values_mut().next().unwrap();
+        let (identity, origin) = (bot.identity, bot.movement.position);
+        bot.conditions.add(ConditionId::GHOST, crate::condition::ConditionDuration::Finite(0.02), None, true, false).unwrap();
+        let mut queries = crate::entity_queries::Queries::new(16, 64).unwrap();
+        queries.actor_state(identity, origin, false).unwrap();
+        queries.flush_bound().unwrap();
+        world.advance_conditions(0.015);
+        assert!(world.take_query_changes().is_empty());
+        world.advance_conditions(0.03);
+        let changes = world.take_query_changes();
+        assert_eq!(changes.len(), 1);
+        let QueryChange::State { identity: actual, origin: position, solid } = changes[0] else { panic!("actor was removed"); };
+        assert_eq!((actual, position, solid), (identity, origin, true));
+        queries.actor_state(actual, position, solid).unwrap();
+        queries.flush_bound().unwrap();
+        assert_eq!(queries.sphere(origin, 0.0, 16, 64, |_| true).unwrap(), [crate::entity_queries::Entity::Actor(identity)]);
+        world.advance_conditions(0.045);
+        assert!(world.take_query_changes().is_empty());
+    }
 
     #[test]
     fn stuck_buttons_survive_between_behavior_updates_while_physics_advances_every_tick(){
@@ -3588,7 +3628,7 @@ mod tests {
         }
     }
 
-    fn fixture_mesh() -> Mesh {
+    pub(crate) fn fixture_mesh() -> Mesh {
         let mut bytes = Vec::new();
         bytes.extend(playsrc_nav::MAGIC.to_le_bytes());
         bytes.extend(16_u32.to_le_bytes());
@@ -3631,7 +3671,7 @@ mod tests {
         .unwrap()
     }
 
-    fn fixture_graph() -> Graph {
+    pub(crate) fn fixture_graph() -> Graph {
         playsrc_entity::parse(
             b"{\"classname\"\"info_player_teamspawn\"\"TeamNum\"\"2\"\"origin\"\"10 50 1\"\"angles\"\"0 0 0\"}\n{\"classname\"\"info_player_teamspawn\"\"TeamNum\"\"3\"\"origin\"\"250 50 1\"\"angles\"\"0 180 0\"}\n{\"classname\"\"team_train_watcher\"\"train\"\"cart\"\"start_node\"\"first\"}\n{\"classname\"\"func_tracktrain\"\"targetname\"\"cart\"\"origin\"\"150 50 1\"}\n{\"classname\"\"path_track\"\"targetname\"\"first\"\"target\"\"second\"\"origin\"\"150 50 1\"}\n{\"classname\"\"path_track\"\"targetname\"\"second\"\"origin\"\"200 50 1\"}\0",
             playsrc_entity::Limits::default(),
@@ -3662,8 +3702,9 @@ mod tests {
         for _ in 0..400 { session.advance(crate::Command { nextbot_stop: true, ..Default::default() }).unwrap(); }
         let target = session.bots.as_ref().unwrap().snapshots()[0].identity;
         session.movement.position = [0.0; 3];
-        let bot = session.bots.as_mut().unwrap().bots.get_mut(&target).unwrap();
-        bot.movement.position = [50.0, 0.0, 0.0];
+        let world = session.bots.as_mut().unwrap();
+        let bot = &world.bots[&target];
+        world.teleport(target, [50.0, 0.0, 0.0], bot.pitch_degrees, bot.yaw_degrees).unwrap();
         session.loadout.get_mut(&weapon).unwrap().critical.bucket.token_bucket = -250.0;
         (session, target)
     }
@@ -3692,8 +3733,9 @@ mod tests {
         assert_eq!(session.equipped_weapon_definition(identity, weapon), Some(definition));
         for _ in 0..400 { session.advance(crate::Command { nextbot_stop: true, ..Default::default() }).unwrap(); }
         session.movement.position = [0.0;3];
+        session.bots.as_mut().unwrap().teleport(identity, [50.0, 0.0, 0.0], 0.0, 180.0).unwrap();
         let bot = session.bots.as_mut().unwrap().bots.get_mut(&identity).unwrap();
-        bot.movement.position = [50.0,0.0,0.0]; bot.active_weapon = Some(weapon); bot.yaw_degrees = 180.0; bot.pitch_degrees = 0.0;
+        bot.active_weapon = Some(weapon);
         bot.loadout.get_mut(&weapon).unwrap().critical.bucket.token_bucket = -250.0;
         (session, identity)
     }
@@ -3859,7 +3901,7 @@ mod tests {
     #[test]
     fn basher_clean_miss_self_damage_bleed_push_and_respawn_cleanup_are_live() {
         let (mut session, target) = melee_session(325, PlayerClass::Scout, Weapon::Bat);
-        session.bots.as_mut().unwrap().bots.get_mut(&target).unwrap().movement.position = [500.0, 0.0, 0.0];
+        session.bots.as_mut().unwrap().teleport(target, [500.0, 0.0, 0.0], 0.0, 0.0).unwrap();
         let hit = melee_swing(&mut session);
         assert_eq!(hit.health, 107.0);
         assert!(session.conditions.contains(crate::Condition::Bleeding));
@@ -3927,7 +3969,7 @@ mod tests {
             let (mut session, target) = melee_session(416, PlayerClass::Soldier, Weapon::Shovel);
             session.movement.position[2] = 100.0;
             session.movement.ground = None;
-            session.bots.as_mut().unwrap().bots.get_mut(&target).unwrap().movement.position[2] = 100.0;
+            session.bots.as_mut().unwrap().teleport(target, [50.0, 0.0, 100.0], 0.0, 0.0).unwrap();
             if blast { session.conditions.insert(crate::Condition::BlastJumping); }
             let hit = melee_swing(&mut session);
             assert!(hit.events.iter().any(|event| matches!(event, crate::Event::PlayerDamaged { amount, crit, .. } if *amount == if blast { 195 } else { 65 } && *crit == if blast { CritKind::Full } else { CritKind::None })));
@@ -4008,7 +4050,7 @@ mod tests {
         let graph = playsrc_entity::parse(b"{\"classname\"\"item_healthkit_small\"\"origin\"\"0 0 0\"}\0", playsrc_entity::Limits::default()).unwrap();
         let map = crate::MapRuntime::compile(&graph, 0.015, 8, Vec::new()).unwrap();
         let (mut session, target) = melee_session_map(325, PlayerClass::Scout, Weapon::Bat, map);
-        session.bots.as_mut().unwrap().bots.get_mut(&target).unwrap().movement.position = [500.0, 0.0, 0.0];
+        session.bots.as_mut().unwrap().teleport(target, [500.0, 0.0, 0.0], 0.0, 0.0).unwrap();
         session.add_melee_condition(crate::PLAYER_IDENTITY, crate::Condition::MarkedForDeath, 3.6, target);
         melee_swing(&mut session);
         session.advance(crate::Command { nextbot_stop: true, ..Default::default() }).unwrap();
@@ -4283,7 +4325,7 @@ mod tests {
             let attack = Attack { phase: AttackPhase::Fire, attacker: identity, team: PlayerTeam::Blue, weapon, target: crate::PLAYER_IDENTITY,
                 position: [-64.0, 0.0, 0.0], eye_position: [-64.0, 0.0, 41.0], pitch_degrees: 0.0, yaw_degrees: 0.0 };
             let mut events = Vec::new();
-            session.fire_hitscan(weapon, 0.0, 0.0, &mut events, Some(attack)).unwrap();
+            session.fire_hitscan(weapon, 0.0, 0.0, &mut events, Some(attack), &mut Vec::new()).unwrap();
             assert!(session.random_draws.iter().all(|draw| draw.context == crate::RandomContext::Authority), "bots have no predicted bullet or sound pass");
             assert!(session.health < if definition == 402 { 100 } else { 200 }, "{definition}: {events:?}");
             assert_eq!(session.bots.as_ref().unwrap().weapon_runtime(identity, weapon).unwrap().hitscan.consecutive_shots, 1);
@@ -4298,7 +4340,7 @@ mod tests {
 
     fn projectile_step(session: &mut crate::Session<Floor>, mut command: crate::Command) -> crate::Snapshot {
         command.nextbot_stop = true;
-        assert!(session.physics_requests.is_empty());
+        assert!(session.projectiles.iter().all(|value|value.presentation.kind!=crate::ProjectileKind::Sticky));
         let results = session.rocket_trace_requests.iter().map(|request| {
             let trace = Floor.trace(request.start, request.end, Hull { mins: [0.0; 3], maxs: [0.0; 3] }, request.mask).unwrap();
             crate::RocketTraceResult {
@@ -4307,7 +4349,7 @@ mod tests {
                 sky: false, normal: trace.normal, direct_target: None,
             }
         }).collect::<Vec<_>>();
-        session.advance_with_external(command, &[], &results, None).unwrap_or_else(|error| {
+        session.advance_with_external(command, &results, None).unwrap_or_else(|error| {
             panic!("tick={} weapon={:?} command={command:?} results={results:?}: {error:?}", session.tick, session.weapon)
         })
     }
@@ -4531,6 +4573,41 @@ mod tests {
                     .find(|event| matches!(event, crate::Event::PlayerDamaged { victim, .. } if *victim == target)).or(hit);
             }
             assert!(matches!(hit, Some(crate::Event::PlayerDamaged { crit, .. }) if crit == if expected_crit { damage::CritKind::Mini } else { damage::CritKind::None }));
+        }
+    }
+
+    #[test]
+    fn projectile_damage_marks_enemy_grenade_impulses_for_the_next_movement() {
+        for (kind, weapon, expected) in [
+            (crate::ProjectileKind::Rocket, Weapon::RocketLauncher, true),
+            (crate::ProjectileKind::Sticky, Weapon::StickybombLauncher, true),
+            (crate::ProjectileKind::Grenade, Weapon::GrenadeLauncher, true),
+            (crate::ProjectileKind::Flare, Weapon::FlareGun, false),
+        ] {
+            let (mut session, target) = projectile_session(18, Weapon::RocketLauncher);
+            let fired = projectile_step(&mut session, crate::Command { fire: true, ..Default::default() });
+            // Exercise the damage dispatch, not a synthetic body or flight result.
+            let mut projectile = fired.projectiles[0].clone();
+            projectile.kind = kind;
+            projectile.weapon = weapon;
+            projectile.launcher_weapon = weapon;
+            projectile.source_weapon = None;
+            projectile.launcher_source = None;
+            projectile.critical = false;
+            projectile.position = [200.0, 0.0, 1.0];
+            session.apply_projectile_damage(&projectile, "", target, 100.0, false, true, [0.0; 3], &mut Vec::new()).unwrap();
+            let bot = &session.bots.as_ref().unwrap().bots[&target];
+            assert!(bot.movement.velocity[2] > 0.0);
+            assert_eq!(bot.blast_since_movement, expected, "{kind:?}");
+            let traces=session.rocket_trace_requests.iter().map(|request| {
+                let trace=Floor.trace(request.start,request.end,Hull {mins:[0.0;3],maxs:[0.0;3]},request.mask).unwrap();
+                crate::RocketTraceResult {projectile:request.projectile,tick:session.tick,end:trace.end,solid:trace.fraction<1.0||trace.start_solid,sky:false,normal:trace.normal,direct_target:None}
+            }).collect::<Vec<_>>();
+            session.advance_with_external(crate::Command::default(),&traces,None).unwrap();
+            let bot = &session.bots.as_ref().unwrap().bots[&target];
+            assert!(bot.movement.ground.is_none());
+            assert!(!bot.blast_since_movement);
+            assert_eq!(bot.blast_jump_state, expected, "{kind:?}");
         }
     }
 

@@ -101,6 +101,12 @@ for (const kind of ["demoman", "engineer", "sniper"]) {
   ]) })
 }
 
+for (const [name, children] of [["pipes", ["PipesPresentPanel", "NoPipesPresentPanel", "ChargeMeter", "ChargeLabel"]], ["charge", ["ChargeMeter"]]] as const) {
+  const path = `resource/ui/huddemoman${name}.res`
+  documents.set(path, { logicalIdentity: path, revision: "structural-demoman-hud", root: object("Resource", children.map(name =>
+    object(name, [scalar("ControlName", "EditablePanel"), scalar("fieldName", name), scalar("wide", "100"), scalar("tall", "20")]))) })
+}
+
 const customControls: readonly VguiControlRegistration[] = Object.freeze(["CTFHudElement", "CTFHealthPanel", "CTFClientScoreBoardDialog"].map((name) => Object.freeze({
   name,
   baseControl: "EditablePanel" as const,

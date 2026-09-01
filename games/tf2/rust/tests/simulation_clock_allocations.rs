@@ -117,8 +117,8 @@ fn pre_advance_clock_reads_do_not_copy_producer_state() {
         }
         let command = Command { fire: tick >= 35, respawn: tick == 90, ..Command::default() };
         let mut reference = session.clone();
-        let expected = reference.advance_with_external(command, &[], &results, None).unwrap();
-        let actual = session.advance_with_external(command, &[], &results, None).unwrap();
+        let expected = reference.advance_with_external(command, &results, None).unwrap();
+        let actual = session.advance_with_external(command, &results, None).unwrap();
         assert_eq!(actual, expected);
         assert_eq!(session.producer_snapshot(), reference.producer_snapshot());
     }

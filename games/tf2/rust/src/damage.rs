@@ -28,6 +28,7 @@ impl DamageType {
     pub const BULLET: Self = Self(1 << 1);
     pub const BUCKSHOT: Self = Self(1 << 29);
     pub const BLAST: Self = Self(1 << 6);
+    pub const SONIC: Self = Self(1 << 9);
     pub const BURN: Self = Self(1 << 3);
     pub const IGNITE: Self = Self(1 << 24);
     pub const MELEE: Self = Self(1 << 27);

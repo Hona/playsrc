@@ -6,8 +6,9 @@ import { buildTf2Wasm } from "./tf2-wasm-build"
 import { buildSourceBundle, prepareSourceBundleProducer } from "./source-bundle"
 import { borrowedWindowsJobLock } from "./windows-job-native"
 import { parseLocalPreparationStage, type LocalPreparationStage } from "./local-job-command"
+import { prepareProfileBrowserDependencies } from "./profile-browser"
 
-const owners = { identity: rustBuildIdentity, wasm: buildTf2Wasm, producer: prepareSourceBundleProducer, resources: buildSourceBundle }
+const owners = { identity: rustBuildIdentity, wasm: buildTf2Wasm, producer: prepareSourceBundleProducer, resources: buildSourceBundle, browser: prepareProfileBrowserDependencies }
 
 /** One legitimate build owner per bounded local-job command. The normal dev
  * preparation still verifies and publishes the complete closure before Ready;
@@ -17,6 +18,7 @@ export async function prepareLocalStage(config: LocalConfig, stage: LocalPrepara
   const startedAt = Date.now()
   const artifact = stage.kind === "wasm" ? { wasm: await dependencies.wasm(config) }
     : stage.kind === "producer" ? { producer: (await dependencies.producer(config)).generatorSha256 }
+      : stage.kind === "browser" ? { browser: await dependencies.browser() }
       : { resources: (await dependencies.resources(config, stage.target)).report.graphDescriptor }
   if (await dependencies.identity() !== identity) throw new Error("Build inputs changed during local preparation stage")
   return { schema: "playsrc-local-preparation-stage-v1", stage, identity, startedAt, finishedAt: Date.now(), artifact }

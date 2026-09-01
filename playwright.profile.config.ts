@@ -5,6 +5,8 @@ export default headedProfileConfiguration({
   match: process.env.PROFILE_SKINNING_EQUIVALENCE === "1"
     ? "skinning-equivalence.profile.ts"
     : process.env.PROFILE_SCENARIOS === "deathnotice" ? "combat-lifecycle.profile.ts"
+    : process.env.PROFILE_SCENARIOS === "demoman-physics" ? "demoman-physics.profile.ts"
+    : process.env.PROFILE_SCENARIOS === "demoman-grenade" ? "demoman-grenade.profile.ts"
     : process.env.PROFILE_SCENARIOS === "damage-indicator" ? "damage-indicator.profile.ts"
     : process.env.PROFILE_SCENARIOS === "setup-round" ? "setup-round.profile.ts"
     : process.env.PROFILE_SCENARIOS === "control-points" ? "control-points.profile.ts"

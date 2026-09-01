@@ -88,7 +88,7 @@ test("later browser stages require fresh non-overlapping displayed authorization
 })
 
 test("direct native entry cannot relabel profiles, substitute commands or accept unknown work", async () => {
-  for (const invocation of [["test"], ["build", "jump_beef"], ["build-stage", "wasm"], ["build-stage", "producer"], ["build-stage", "resources", "jump_beef"], ["diagnostic", "0", "0"], ["profile", "gameplay"], ["prepare-profile", "gameplay"]]) {
+  for (const invocation of [["test"], ["build", "jump_beef"], ["build-stage", "wasm"], ["build-stage", "producer"], ["build-stage", "browser"], ["build-stage", "resources", "jump_beef"], ["diagnostic", "0", "0"], ["profile", "gameplay"], ["prepare-profile", "gameplay"]]) {
     const plan = localJobCommand(invocation)
     const command = plan.controller ? [process.execPath, path.join(repositoryRoot, plan.command[0]!), "--application-root", repositoryRoot, ...plan.command.slice(1)] : [process.execPath, ...plan.command]
     const request = { job: "job", task: "task", run: "run", action: "not authority", invocation, command, cwd: repositoryRoot, lockPath: "lock", lockToken: "token", deadline: 100, preflightFailure: null, interactive: !plan.interactive }
@@ -121,3 +121,13 @@ test.skipIf(process.platform !== "win32")("the actual Windows PowerShell bridge 
   expect({ code, errors }).toEqual({ code: 0, errors: "" })
   expect(JSON.parse(output)).toEqual({ many: ["test", "a.test.ts", "b.test.ts"], emptyCount: 0, one: ["a.test.ts"], rejected: 4 })
 })
+
+test.skipIf(process.platform !== "win32")("native receipt publication freezes the exact retained bytes before later sampler activity", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "playsrc-native-receipt-"))
+  try {
+    const child = Bun.spawn(["powershell.exe", "-NoProfile", "-NonInteractive", "-File", path.join(import.meta.dir, "fixtures/windows-job-receipt.ps1"), "-Source", path.resolve(import.meta.dir, "../windows-job-native.cs"), "-Directory", directory], { windowsHide: true, stdout: "pipe", stderr: "pipe", timeout: 15_000 })
+    const [output, errors, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    expect({ code, errors }).toEqual({ code: 0, errors: "" })
+    expect(JSON.parse(output)).toEqual({ sameBytes: true, retainedPeak: 77905920, livePeak: 77942784 })
+  } finally { await rm(directory, { recursive: true, force: true }) }
+}, 20_000)

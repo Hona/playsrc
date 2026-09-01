@@ -133,6 +133,7 @@ export async function buildThreadedTf2Wasm(
   environment: Record<string, string | undefined>,
 ): Promise<string> {
   const buildEnvironment = { ...process.env, ...environment }
+  const targetRoot=path.resolve(repositoryRoot,buildEnvironment.CARGO_TARGET_DIR ?? "target")
   const executable = await resolveCargoExecutable(cargo, buildEnvironment)
   const rustc = path.join(path.dirname(executable), process.platform === "win32" ? "rustc.exe" : "rustc")
   const compiler = Bun.spawn([rustc, `+${toolchains.rust.threadedToolchain}`, "--print", "sysroot"], {
@@ -164,7 +165,7 @@ export async function buildThreadedTf2Wasm(
   })
   const exitCode = await child.exited
   if (exitCode !== 0) throw new Tf2WasmBuildError(`cargo build exited with code ${exitCode}`)
-  const raw = path.join(repositoryRoot, "target", "wasm32-unknown-unknown", "release", "playsrc_tf2_wasm.wasm")
+  const raw = path.join(targetRoot, "wasm32-unknown-unknown", "release", "playsrc_tf2_wasm.wasm")
   const output = path.join(repositoryRoot, "games", "tf2", "browser", "src", "wasm-generated")
   await rm(output, { recursive: true, force: true })
   await mkdir(output, { recursive: true })
@@ -191,7 +192,7 @@ export async function buildThreadedTf2Wasm(
   const patched = source.replaceAll("\r\n", "\n").replace("import('../../..')", "import('../../../tf2_wasm.js')")
   if (patched === source) throw new Tf2WasmBuildError("wasm-bindgen Rayon worker import contract changed")
   await writeFile(helper, patched)
-  const audioTarget = path.join(repositoryRoot, "target", "audio-client")
+  const audioTarget = path.join(targetRoot, "audio-client")
   const audio = Bun.spawn([
     cargo, `+${toolchains.rust.threadedToolchain}`, "build", "-p", "playsrc-audio-wasm",
     "--target", "wasm32-unknown-unknown", "--target-dir", audioTarget, "--release", "-Z", "build-std=panic_abort,std",
@@ -242,6 +243,6 @@ export async function buildTf2Wasm(config: LocalConfig, threaded = true): Promis
   )
   const exitCode = await child.exited
   if (exitCode !== 0) throw new Tf2WasmBuildError(`cargo build exited with code ${exitCode}`)
-  const raw = path.join(repositoryRoot, "target", "wasm32-unknown-unknown", "release", "playsrc_tf2_wasm.wasm")
+  const raw = path.join(path.resolve(repositoryRoot,process.env.CARGO_TARGET_DIR ?? "target"), "wasm32-unknown-unknown", "release", "playsrc_tf2_wasm.wasm")
   return raw
 }

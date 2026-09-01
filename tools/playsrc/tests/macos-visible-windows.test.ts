@@ -5,7 +5,7 @@ import { requireMacPageAdmission } from "../profile/macos-page-admission"
 const browser = { id: 1, pid: 100, owner: "Chrome", layer: 0, alpha: 1, bounds: { X: 0, Y: 25, Width: 1282, Height: 800 } }
 const popup = { ...browser, id: 2, bounds: { X: 400, Y: 300, Width: 320, Height: 174 } }
 const facts: PageWindowFacts = { browserPid: 100, targetId: "main-page", cdpWindowId: 50, bounds: browser.bounds, windowState: "normal", url: "http://localhost/tf2/" }
-const snapshot = (windows = [browser]): MacWindowSnapshot => ({ windows, screens: [{ X: 0, Y: 0, Width: 1920, Height: 1080 }], cursorLayer: 2147483630 })
+const snapshot = (windows = [browser]): MacWindowSnapshot => ({ windows, screens: [{ X: 0, Y: 0, Width: 1920, Height: 1080 }], cursorLayer: 2147483630, frontmostPid: browser.pid })
 
 test("a frontmost same-browser popup never substitutes for the measured page", () => {
   const original = admitMacWindow(snapshot(), facts)
@@ -53,9 +53,11 @@ test("all covering layers including browser notices and layer-eight alerts rejec
 })
 
 test("retained native failures and hidden tabs cannot pass the admission gate", () => {
-  const clear = { at: 0, ...admitMacWindow(snapshot(), facts), document: { url: facts.url, visibility: "visible", focused: true } }
+  const clear = { at: 0, ...admitMacWindow(snapshot(), facts), snapshot: snapshot(), document: { url: facts.url, visibility: "visible", focused: true } }
   expect(() => requireMacPageAdmission(clear)).not.toThrow()
   expect(() => requireMacPageAdmission({ ...clear, error: "identity changed" })).toThrow("identity")
   expect(() => requireMacPageAdmission({ ...clear, document: { ...clear.document, visibility: "hidden" } })).toThrow("visible document")
+  expect(() => requireMacPageAdmission({ ...clear, snapshot: { ...snapshot(), frontmostPid: 200 } })).toThrow("native foreground")
+  expect(() => requireMacPageAdmission({ ...clear, snapshotAfter: { ...snapshot(), frontmostPid: 200 } })).toThrow("native foreground")
   expect(() => requireMacPageAdmission({ at: 0 })).toThrow("Missing")
 })

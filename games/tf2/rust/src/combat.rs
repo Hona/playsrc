@@ -4,6 +4,7 @@ pub enum BlastKind {
     Sticky,
     ModifiedRocket { damage: f32, radius: f32 },
     Flare { damage: f32, radius: f32 },
+    Grenade { damage: f32, radius: f32 },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -50,6 +51,7 @@ pub fn player_blast_damage(
     let (base_damage, ordinary_radius, self_radius) = match kind {
         BlastKind::Rocket => (90.0_f32, 146.0_f32, 121.0_f32),
         BlastKind::Sticky => (120.0_f32, 146.0_f32, 146.0_f32),
+        BlastKind::Grenade {damage,radius} => (if target.self_damage {100.0}else{damage},radius,146.0),
         BlastKind::ModifiedRocket { damage, radius } => (
             if target.self_damage { 90.0 } else { damage }, radius, 121.0),
         BlastKind::Flare { damage, radius } => (
@@ -70,7 +72,7 @@ pub fn player_blast_damage(
     }
     let fraction = (distance / radius).clamp(0.0, 1.0);
     let mut damage = base_damage + (base_damage * 0.5 - base_damage) * fraction;
-    if target.self_damage && kind == BlastKind::Sticky {
+    if target.self_damage && matches!(kind,BlastKind::Sticky|BlastKind::Grenade {..}) {
         damage *= 0.75;
     }
     Some(BlastDamage {
@@ -178,6 +180,15 @@ fn normalize(value: [f32; 3]) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn regular_grenade_timer_damage_does_not_replace_weapon_base_self_damage() {
+        let kind=BlastKind::Grenade {damage:60.0,radius:146.0};
+        let enemy=player_blast_damage(kind,[0.0;3],target(0.0,false)).unwrap();
+        let own=player_blast_damage(kind,[0.0;3],target(0.0,true)).unwrap();
+        assert_eq!((enemy.damage,enemy.health_points),(60.0,60));
+        assert_eq!((own.damage,own.damage_for_force,own.health_points),(75.0,75.0,75));
+    }
 
     fn target(distance: f32, self_damage: bool) -> PlayerBlastTarget {
         PlayerBlastTarget {

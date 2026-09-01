@@ -1,7 +1,7 @@
 import { ConfigurationError, loadLocalConfig } from "./config"
 
 async function main(): Promise<number> {
-  const [command, target, argument] = process.argv.slice(2)
+  const [command, target, argument, ...options] = process.argv.slice(2)
   try {
     if (command === "setup") {
       const started = performance.now()
@@ -31,8 +31,9 @@ async function main(): Promise<number> {
     const config = await loadLocalConfig()
     if (command === "verify") {
       if (target === "tf2-wasm") {
+        if (options.length > 1 || options.length === 1 && options[0] !== "--particles-only") throw new ConfigurationError("tf2-wasm accepts only --particles-only")
         const { verifyTf2Wasm } = await import("./verify-tf2-wasm")
-        console.log(JSON.stringify(await verifyTf2Wasm(config, argument)))
+        console.log(JSON.stringify(await verifyTf2Wasm(config, argument, options.length ? "particle-materials" : "complete")))
         return 0
       }
       if (target === "browser") {

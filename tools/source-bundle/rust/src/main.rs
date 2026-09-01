@@ -1140,7 +1140,7 @@ fn collect_material(
     environment: SelectionEnvironment,
     selected_only: bool,
     consumer: &str,
-) -> Result<(), String> {
+) -> Result<playsrc_material::Material, String> {
     let identity = root_path.to_ascii_lowercase();
     let root_bytes = resolver.required(&identity, format!("{consumer}:material"))?;
     if identity.ends_with("_subrect.vmt") {
@@ -1251,7 +1251,37 @@ fn collect_material(
             )?;
         }
     }
-    Ok(())
+    Ok(material)
+}
+
+#[cfg(feature = "verify-hdr")]
+fn particle_source_expectation(resolver: &mut Resolver<'_>, path: &str, material: &playsrc_material::Material) -> Result<serde_json::Value, String> {
+    let texture = material.selected_textures.first().and_then(|role| material.textures.iter().find(|texture| texture.role == *role))
+        .and_then(|texture| texture.logical_path.as_ref()).ok_or_else(|| format!("particle texture missing: {path}"))?.to_ascii_lowercase();
+    let texture_bytes = resolver.required(&texture, "particle-material:selected-texture")?;
+    let metadata = playsrc_vtf::inspect(&texture_bytes, playsrc_vtf::Dialect::Source2013Pc, Default::default()).map_err(|error| error.to_string())?;
+    let state = playsrc_material::static_state(material, playsrc_material::TextureAlphaFacts { base: metadata.alpha_flags.one_bit || metadata.alpha_flags.eight_bit }).map_err(|error| error.to_string())?;
+    let sampling = playsrc_vtf::sampling_state(&metadata, playsrc_vtf::SamplingEnvironment { shader_model: 90, force_anisotropy: 1, maximum_anisotropy: 16, force_trilinear: false });
+    let discard = match state.fragment_discard {
+        playsrc_material::FragmentDiscardRequirement::None => serde_json::json!({"kind":"none","source":"base-texture-or-one","pass":"greater","reference":0.0}),
+        playsrc_material::FragmentDiscardRequirement::Alpha { source, pass, reference } => serde_json::json!({"kind":"alpha",
+            "source":match source { playsrc_material::FragmentAlphaSource::BaseTextureOrOne=>"base-texture-or-one", playsrc_material::FragmentAlphaSource::ShaderOutput=>"shader-output" },
+            "pass":match pass { playsrc_material::CompareFunction::Greater=>"greater", playsrc_material::CompareFunction::GreaterOrEqual=>"greater-or-equal" }, "reference":f64::from(reference)}),
+    };
+    let source = resolver.required(path, "particle-material:material")?;
+    Ok(serde_json::json!({"identity":path.strip_prefix("materials/").ok_or("particle material path")?,
+        "materialSha256":digest(&source),"texture":texture,"textureSha256":digest(&texture_bytes),"spriteCard":material.particle.is_some(),
+        "state":{
+            "lighting":state.lighting as u8,"blendEnabled":state.blend.enabled,"blendSource":state.blend.source as u8,"blendDestination":state.blend.destination as u8,
+            "alphaTest":state.alpha_test,"cull":state.cull as u8,"depthTest":state.depth_test,"depthWrite":state.depth_write,"depthFunction":state.depth_function as u8,
+            "polygonOffset":state.polygon_offset as u8,"fog":state.fog as u8,"wireframe":state.wireframe,"noDraw":state.no_draw,"vertexColor":state.vertex_color,"vertexAlpha":state.vertex_alpha,
+            "translucentQueue":state.translucent_queue,"alphaTestReference":f64::from(state.alpha_test_reference),"alphaModulation":f64::from(state.alpha_modulation),
+            "alphaOwnership":{"baseTextureAvailable":state.alpha_ownership.base_texture_available,"opacity":state.alpha_ownership.opacity,"alphaTest":state.alpha_ownership.alpha_test,
+                "selfIlluminationMask":state.alpha_ownership.self_illumination_mask,"environmentMask":state.alpha_ownership.environment_mask,"phongMask":state.alpha_ownership.phong_mask,
+                "tintMask":state.alpha_ownership.tint_mask,"vertexAlpha":state.alpha_ownership.vertex_alpha,"materialAlphaModulation":state.alpha_ownership.material_alpha_modulation},
+            "fragmentDiscard":discard,"wrapS":sampling.wrap_s as u8,"wrapT":sampling.wrap_t as u8,"wrapU":sampling.wrap_u as u8,"minFilter":sampling.min_filter as u8,
+            "magFilter":sampling.mag_filter as u8,"mipmapped":sampling.mipmapped,"noLod":sampling.no_lod,"allMips":sampling.all_mips,"samplingAvailable":true
+        }}))
 }
 
 fn resolve_ui_material(
@@ -2154,6 +2184,10 @@ struct BuildReport {
     native_hdr_sha256: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     native_hdr_derived_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    particle_material_expectations: Option<Vec<serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    native_ldr: Option<serde_json::Value>,
 }
 
 fn main() -> Result<(), String> {
@@ -2688,6 +2722,7 @@ fn main() -> Result<(), String> {
         "models/weapons/w_models/w_rocket_airstrike/w_rocket_airstrike.mdl",
         "models/weapons/w_models/w_flaregun_shell.mdl",
         "models/weapons/w_models/w_stickybomb.mdl",
+        "models/weapons/w_models/w_grenade_grenadelauncher.mdl",
         "models/weapons/w_models/w_syringe_proj.mdl",
         "models/weapons/c_models/c_soldier_arms.mdl",
         "models/weapons/c_models/c_demo_arms.mdl",
@@ -2966,19 +3001,35 @@ fn main() -> Result<(), String> {
         pak.entries.iter().any(|entry| entry.raw_name.eq_ignore_ascii_case(b"particles.txt")))?;
     let roots = playsrc_tf2::particle_resources::roots(&graph).into_iter()
         .map(playsrc_particle::DefinitionLookup::Name).collect::<Vec<_>>();
+    #[cfg(not(feature = "verify-hdr"))]
+    let particle_material_expectations = None;
+    #[cfg(feature = "verify-hdr")]
+    let mut particle_material_expectations = None;
+    #[cfg(feature = "verify-hdr")]
+    let rendered_materials = if verify_hdr {
+        particle_material_expectations = Some(Vec::new());
+        playsrc_tf2_wasm::particle_material_dependencies(&registry, &roots).map_err(|_| "particle material closure")?
+            .iter().map(|identity| material_path(identity.as_bytes())).collect::<Result<BTreeSet<_>, _>>()?
+    } else { BTreeSet::new() };
     let closure = registry
         .dependency_closure(&roots)
         .map_err(|error| error.to_string())?;
     for material in closure.materials {
         let path = material_path(material.as_bytes())?;
-        collect_material(
+        let material = collect_material(
             &mut resolver,
             &path,
             true,
-            SelectionEnvironment::default(),
+            SelectionEnvironment { sprite_card_default_depth_blend: Some(true), ..Default::default() },
             true,
             "particle-material",
         )?;
+        #[cfg(feature = "verify-hdr")]
+        if rendered_materials.contains(&path) {
+            particle_material_expectations.as_mut().expect("verification enabled").push(particle_source_expectation(&mut resolver, &path, &material)?);
+        }
+        #[cfg(not(feature = "verify-hdr"))]
+        let _ = material;
     }
     collect_material(
         &mut resolver,
@@ -3923,6 +3974,8 @@ fn main() -> Result<(), String> {
         native_hdr_bytes: None,
         native_hdr_sha256: None,
         native_hdr_derived_sha256: None,
+        particle_material_expectations,
+        native_ldr: None,
     };
     if verify_hdr {
         #[cfg(not(feature = "verify-hdr"))]
@@ -3945,6 +3998,12 @@ fn main() -> Result<(), String> {
             report.native_hdr_bytes = Some(artifact.payload.len());
             report.native_hdr_sha256 = Some(digest(&artifact.payload));
             report.native_hdr_derived_sha256 = Some(hex(&artifact.derived_sha256));
+            if target == "jump_beef" {
+                let ldr = playsrc_tf2_wasm::compile_artifact(&bsp_bytes, 0, &resources)
+                    .map_err(|error| format!("native LDR compilation failed with error {error}"))?;
+                install_artifact(&root.join(format!("{target}.native-ldr.psmp")), &ldr.payload)?;
+                report.native_ldr = Some(serde_json::json!({"bytes":ldr.payload.len(),"sha256":digest(&ldr.payload),"derivedSha256":hex(&ldr.derived_sha256)}));
+            }
         }
     }
     eprintln!(

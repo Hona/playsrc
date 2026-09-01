@@ -1,5 +1,7 @@
 # StudioModel Presentation Evidence
 
+The configured hashes below are retained PSMP v3 evidence. PSMP v4 adds authored collision hull bounds and requires regenerated artifacts; these historical hashes are not v4 acceptance.
+
 ## Commands
 
 - `cargo test -p playsrc-studio-model --lib` runs bounded synthetic parser, composition, artifact, transform, timing, event, autolayer, and pose vectors.

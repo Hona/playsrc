@@ -197,6 +197,13 @@ pub struct World {
     rotation: f32,
     next_identity: u32,
     interval: f32,
+    query_changes: Vec<QueryChange>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum QueryChange {
+    Create { identity: u32, position: [f32; 3], hull: Hull },
+    Remove(u32),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -214,6 +221,7 @@ impl World {
             rotation: 0.0,
             next_identity: 0x5000_0000,
             interval,
+            query_changes: Vec::new(),
         }
     }
 
@@ -234,7 +242,21 @@ impl World {
             .collect()
     }
 
+    pub(crate) fn take_query_changes(&mut self) -> Vec<QueryChange> { std::mem::take(&mut self.query_changes) }
+
+    pub(crate) fn damage(&mut self, identity: u32, team: PlayerTeam, amount: f32) {
+        let Some(index) = self.buildings.iter().position(|building| building.snapshot.identity == identity) else { return; };
+        let building = &mut self.buildings[index].snapshot;
+        if building.team == team || amount <= 0.0 { return; }
+        building.health = (building.health - amount).max(0.0);
+        if building.health <= 0.0 {
+            self.query_changes.push(QueryChange::Remove(identity));
+            self.buildings.remove(index);
+        }
+    }
+
     pub fn reset(&mut self) {
+        self.query_changes.extend(self.buildings.iter().map(|building| QueryChange::Remove(building.snapshot.identity)));
         self.buildings.clear();
         self.placement = None;
         self.rotation = 0.0;
@@ -261,6 +283,7 @@ impl World {
                 });
             }
             Request::Destroy(object) => {
+                self.query_changes.extend(self.buildings.iter().filter(|building| building.snapshot.object == object).map(|building| QueryChange::Remove(building.snapshot.identity)));
                 self.buildings
                     .retain(|building| building.snapshot.object != object);
                 if self
@@ -277,6 +300,7 @@ impl World {
             Request::Hurt(amount) => {
                 for building in &mut self.buildings {
                     building.snapshot.health = (building.snapshot.health - amount as f32).max(0.0);
+                    if building.snapshot.health <= 0.0 { self.query_changes.push(QueryChange::Remove(building.snapshot.identity)); }
                 }
                 self.buildings
                     .retain(|building| building.snapshot.health > 0.0);
@@ -442,6 +466,7 @@ impl World {
             next_generate_tick: 0,
             accumulated_heal: 0.0,
         });
+        self.query_changes.push(QueryChange::Create { identity, position: placement.position, hull: placement.object.hull() });
         true
     }
 
@@ -533,37 +558,6 @@ impl World {
             }
         }
         true
-    }
-
-    pub fn nearest_wrench_target(
-        &self,
-        origin: [f32; 3],
-        forward: [f32; 3],
-        team: PlayerTeam,
-    ) -> Option<u32> {
-        self.buildings
-            .iter()
-            .filter(|building| building.snapshot.team == team)
-            .find_map(|building| {
-                let hull = building.snapshot.object.hull();
-                let center = [
-                    building.snapshot.position[0],
-                    building.snapshot.position[1],
-                    building.snapshot.position[2] + hull.maxs[2] * 0.5,
-                ];
-                let delta = [
-                    center[0] - origin[0],
-                    center[1] - origin[1],
-                    center[2] - origin[2],
-                ];
-                let along = delta[0] * forward[0] + delta[1] * forward[1] + delta[2] * forward[2];
-                let radius = hull.maxs[0].max(hull.maxs[1]) + 18.0;
-                (along >= -radius
-                    && along <= crate::ballistics::WRENCH_BUILDING_RANGE + radius
-                    && delta.iter().map(|value| value * value).sum::<f32>()
-                        <= (crate::ballistics::WRENCH_BUILDING_RANGE + radius).powi(2))
-                .then_some(building.snapshot.identity)
-            })
     }
 
     pub fn advance<T: Tracer>(
@@ -828,6 +822,24 @@ mod tests {
         });
         assert!(world.confirm(0, 1, PlayerTeam::Red, metal));
         world.buildings.last().unwrap().snapshot.identity
+    }
+
+    #[test]
+    fn damage_retains_fractional_health_and_journals_only_enemy_destruction() {
+        let mut world = World::new(0.015);
+        let identity = build(&mut world, Object::SENTRY, [64.0, 0.0, 0.0], &mut 200);
+        assert!(matches!(world.take_query_changes().as_slice(), [QueryChange::Create { identity: actual, .. }] if *actual == identity));
+        world.buildings[0].snapshot.health = 100.0;
+        world.damage(identity, PlayerTeam::Red, 200.0);
+        assert_eq!(world.snapshots()[0].health, 100.0);
+        world.damage(identity, PlayerTeam::Blue, 10.25);
+        assert_eq!(world.snapshots()[0].health, 89.75);
+        assert!(world.take_query_changes().is_empty());
+        world.damage(identity, PlayerTeam::Blue, 100.0);
+        assert!(world.snapshots().is_empty());
+        assert!(matches!(world.take_query_changes().as_slice(), [QueryChange::Remove(actual)] if *actual == identity));
+        world.damage(identity, PlayerTeam::Blue, 100.0);
+        assert!(world.take_query_changes().is_empty());
     }
 
     #[test]

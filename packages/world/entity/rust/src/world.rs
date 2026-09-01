@@ -1282,6 +1282,10 @@ impl EntityWorld {
         Some(EntityCollisionState{transform:entity.world_transform,enabled})
     }
 
+    pub fn model_bounds(&self, model: usize) -> Option<ModelBounds> {
+        self.config.model_bounds.iter().find(|bounds| bounds.model == model).copied()
+    }
+
     pub fn descendant_local_chain(&self,root:EntityHandle,mut child:EntityHandle)->Option<Vec<Transform>>{
         let mut chain=Vec::new();let mut depth=0;
         while child!=root {
@@ -3617,6 +3621,9 @@ impl EntityWorld {
     ) -> Result<(), RuntimeFailure> {
         if !self.is_resolvable(target) {
             return self.diagnostic(batch, DiagnosticCode::StaleHandle, Some(target));
+        }
+        if matches!(self.entity(target).map(|entity| &entity.behavior), Some(BehaviorState::DynamicProp(_))) {
+            return self.fire_output(target, b"OnTakeDamage", Variant::Void, attacker, Some(target), 0.0, batch);
         }
         let Some(BehaviorState::Mover(mut state)) =
             self.entity(target).map(|entity| entity.behavior.clone())

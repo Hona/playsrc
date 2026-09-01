@@ -1,47 +1,109 @@
 use super::*;
 
-struct Random(u32);
 #[test]
-fn retained_supports_stay_lazy_on_cold_misses_and_are_reused() {
-    let geometry = PreparedConvex::compile(
-        &box_vertices(Hull {
-            mins: [-1.0; 3],
-            maxs: [1.0; 3],
-        }),
-        &box_faces(),
-        &box_edges(),
-        Transform::IDENTITY.basis().unwrap(),
-    );
-    assert!(
-        geometry
-            .directions
-            .iter()
-            .all(|direction| direction.support.get().is_none())
-    );
-    for _ in 0..2 {
-        let trace = geometry
-            .trace(
-                [-100.0, 0.0, 0.0],
-                [-101.0, 0.0, 0.0],
-                Hull {
-                    mins: [0.0; 3],
-                    maxs: [0.0; 3],
-                },
-                1,
-                SnapshotLimits::default(),
-            )
-            .unwrap();
-        assert_eq!(trace.fraction, 1.0);
-        assert_eq!(
-            geometry
-                .directions
-                .iter()
-                .filter(|direction| direction.support.get().is_some())
-                .count(),
-            1
-        );
-    }
+fn static_prop_filter_scope_does_not_change_snapshot_state() {
+    let world = World::empty();
+    let snapshot = Snapshot::compile(&world, 7, vec![ObjectInput {
+        identity: 42, role: ObjectRole::StaticProp, enabled: true, volume_contents: false,
+        transform: Transform::IDENTITY, linear_velocity: [0.0; 3], angular_velocity: [0.0; 3],
+        collision_group: 0, contents: 1, surface_flags: 0,
+        shape: SnapshotShape::BoundingBox { bounds: Hull { mins: [-1.0; 3], maxs: [1.0; 3] } },
+    }], SnapshotLimits::default()).unwrap();
+    let before = snapshot.snapshot_bytes().unwrap();
+    let request = SnapshotRayRequest { start: [-10.0, 0.0, 0.0], end: [10.0, 0.0, 0.0], mask: 1, scope: TraceScope::Everything, ignored: &[] };
+    let hit = world.trace_snapshot_ray(&snapshot, request, |_| false).unwrap();
+    assert!(matches!(hit.hit, Some(Hit::Object { identity: 42, role: ObjectRole::StaticProp, .. })));
+    assert!(!world.trace_snapshot_ray(&snapshot, SnapshotRayRequest { scope: TraceScope::EntitiesOnly, ..request }, |_| true).unwrap().did_hit());
+    assert!(!world.trace_snapshot_ray(&snapshot, SnapshotRayRequest { scope: TraceScope::EverythingFilterProps, ..request }, |_| false).unwrap().did_hit());
+    assert!(!world.trace_snapshot_ray(&snapshot, SnapshotRayRequest { scope: TraceScope::WorldOnly, ..request }, |_| true).unwrap().did_hit());
+    assert_eq!(snapshot.snapshot_bytes().unwrap(), before);
 }
+
+#[test]
+fn authored_hierarchy_validates_references_cycles_bounds_and_limits() {
+    let shape = PhysicsShape::compile(
+        1,
+        vec![ConvexInput {
+            solid: 0,
+            convex: 0,
+            contents: 1,
+            vertices: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            triangles: vec![[0, 1, 2], [0, 3, 1], [0, 2, 3], [1, 3, 2]],
+            authored: None,
+        }],
+        SnapshotLimits::default(),
+    )
+    .unwrap();
+    let mut raw = [0_u8; 28];
+    raw[4..8].copy_from_slice(&32_i32.to_le_bytes());
+    raw[20..24].copy_from_slice(&2.0_f32.to_le_bytes());
+    raw[24..27].copy_from_slice(&[250; 3]);
+    let hierarchy = AuthoredHierarchy {
+        nodes: vec![AuthoredHierarchyNode {
+            raw,
+            children: None,
+            hull: Some(AuthoredHullRef::Piece(0)),
+        }],
+        enclosures: Vec::new(),
+    };
+    assert!(
+        hierarchy
+            .validate(&shape, SnapshotLimits::default())
+            .is_ok()
+    );
+    let mut missing = hierarchy.clone();
+    missing.nodes[0].hull = Some(AuthoredHullRef::Piece(1));
+    assert_eq!(
+        missing
+            .validate(&shape, SnapshotLimits::default())
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidReference
+    );
+    let mut cycle = hierarchy.clone();
+    cycle.nodes[0].raw[..4].copy_from_slice(&28_i32.to_le_bytes());
+    cycle.nodes[0].children = Some([0, 0]);
+    assert_eq!(
+        cycle
+            .validate(&shape, SnapshotLimits::default())
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidSnapshot
+    );
+    let mut extra = hierarchy.clone();
+    extra.nodes.push(extra.nodes[0].clone());
+    assert_eq!(
+        extra
+            .validate(&shape, SnapshotLimits::default())
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidReference
+    );
+    assert_eq!(
+        extra
+            .validate(
+                &shape,
+                SnapshotLimits {
+                    max_hierarchy_nodes: 1,
+                    ..SnapshotLimits::default()
+                }
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::Limit
+    );
+    let mut bounds = hierarchy;
+    bounds.nodes[0].raw[20..24].copy_from_slice(&f32::NAN.to_le_bytes());
+    assert_eq!(
+        bounds
+            .validate(&shape, SnapshotLimits::default())
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidSnapshot
+    );
+}
+
+struct Random(u32);
 impl Random {
     fn value(&mut self, scale: f32) -> f32 {
         self.0 = self.0.wrapping_mul(1664525).wrapping_add(1013904223);
@@ -49,115 +111,6 @@ impl Random {
     }
     fn vector(&mut self, scale: f32) -> [f32; 3] {
         std::array::from_fn(|_| self.value(scale))
-    }
-}
-
-fn compare(
-    convex: &Convex,
-    transform: Transform,
-    count: usize,
-    random: &mut Random,
-) -> (usize, usize) {
-    let basis = transform.basis().unwrap();
-    let prepared = PreparedConvex::compile(&convex.vertices, &convex.faces, &convex.edges, basis);
-    let limits = SnapshotLimits::default();
-    for index in 0..count {
-        let start = if index % 7 == 0 {
-            basis.point(convex.vertices[index % convex.vertices.len()])
-        } else {
-            add(transform.origin, random.vector(100.0))
-        };
-        let end = if index % 5 == 0 {
-            start
-        } else {
-            add(transform.origin, random.vector(100.0))
-        };
-        let hull = match index % 4 {
-            0 => Hull {
-                mins: [0.0; 3],
-                maxs: [0.0; 3],
-            },
-            1 => Hull {
-                mins: [-24.0, -24.0, 0.0],
-                maxs: [24.0, 24.0, 82.0],
-            },
-            2 => Hull {
-                mins: [-24.0, -24.0, 0.0],
-                maxs: [24.0, 24.0, 62.0],
-            },
-            _ => Hull {
-                mins: [-0.0001; 3],
-                maxs: [0.0001; 3],
-            },
-        };
-        let reference = trace_convex(
-            start,
-            end,
-            hull,
-            &convex.vertices,
-            &convex.faces,
-            &convex.edges,
-            basis,
-            convex.contents,
-            limits,
-        );
-        let actual = prepared.trace(start, end, hull, convex.contents, limits);
-        assert_eq!(
-            actual, reference,
-            "query {index}: {start:?} -> {end:?}, {transform:?}"
-        );
-        // Debug formatting includes every selected identity/flag/plane field;
-        // verify floating-point bits too, including signed zero.
-        if let (Ok(actual), Ok(reference)) = (actual, reference) {
-            assert_eq!(actual.fraction.to_bits(), reference.fraction.to_bits());
-            assert_eq!(
-                actual.fraction_left_solid.to_bits(),
-                reference.fraction_left_solid.to_bits()
-            );
-            assert_eq!(
-                actual.end.map(f32::to_bits),
-                reference.end.map(f32::to_bits)
-            );
-            assert_eq!(
-                actual
-                    .plane
-                    .map(|p| (p.normal.map(f32::to_bits), p.distance.to_bits())),
-                reference
-                    .plane
-                    .map(|p| (p.normal.map(f32::to_bits), p.distance.to_bits()))
-            );
-        }
-    }
-    (prepared.source_direction_count, prepared.directions.len())
-}
-
-#[test]
-fn retained_convex_intervals_match_original_sweeps_exactly() {
-    let mut random = Random(0x183180);
-    for _ in 0..32 {
-        let shape = PhysicsShape::compile(
-            1,
-            vec![ConvexInput {
-                solid: 0,
-                convex: 0,
-                contents: 1,
-                vertices: vec![
-                    [0.0; 3],
-                    [random.value(80.0).abs() + 1.0, 0.0, 0.0],
-                    [0.0, random.value(80.0).abs() + 1.0, 0.0],
-                    [0.0, 0.0, random.value(80.0).abs() + 1.0],
-                ],
-                triangles: vec![[0, 1, 2], [0, 2, 3], [0, 3, 1], [1, 3, 2], [0, 1, 2]],
-            }],
-            SnapshotLimits::default(),
-        )
-        .unwrap();
-        let transform = Transform {
-            origin: random.vector(16000.0),
-            angles: random.vector(180.0),
-        };
-        let (before, after) = compare(&shape.convexes[0], transform, 256, &mut random);
-        assert!(after < before);
     }
 }
 
@@ -220,7 +173,7 @@ fn spatial_candidates_match_linear_source_order_and_reuse_query_storage() {
 }
 
 #[test]
-fn geometry_retention_is_bound_to_shape_and_transform_not_revision_or_identity_alone() {
+fn physical_query_resources_are_shared_across_poses_but_not_replacements() {
     let world = World::empty();
     let shape = Arc::new(
         PhysicsShape::compile(
@@ -236,23 +189,19 @@ fn geometry_retention_is_bound_to_shape_and_transform_not_revision_or_identity_a
                     [0.0, 0.0, 10.0],
                 ],
                 triangles: vec![[0, 1, 2], [0, 2, 3], [0, 3, 1], [1, 3, 2]],
+                authored: None,
             }],
             SnapshotLimits::default(),
         )
         .unwrap(),
     );
+    let implementation = Arc::new(FixturePhysicsQuery { geometry: Arc::clone(&shape), calls: Default::default() });
     let inputs = vec![
-        object(1, [0.0; 3], SnapshotShape::Physics(Arc::clone(&shape))),
-        object(2, [20.0; 3], SnapshotShape::Physics(Arc::clone(&shape))),
+        object(1, [0.0; 3], SnapshotShape::Physics(implementation.clone())),
+        object(2, [20.0; 3], SnapshotShape::Physics(implementation.clone())),
     ];
     let original = Snapshot::compile(&world, 1, inputs.clone(), SnapshotLimits::default()).unwrap();
-    assert!(
-        original
-            .objects
-            .iter()
-            .flat_map(|object| object.prepared.iter())
-            .all(|cache| cache.0.get().is_none())
-    );
+    assert_eq!(implementation.calls.load(std::sync::atomic::Ordering::Relaxed), 0);
     world
         .trace_snapshot_ray(
             &original,
@@ -266,8 +215,7 @@ fn geometry_retention_is_bound_to_shape_and_transform_not_revision_or_identity_a
             |_| true,
         )
         .unwrap();
-    assert!(original.objects[0].prepared[0].0.get().is_some());
-    assert!(original.objects[1].prepared[0].0.get().is_none());
+    assert_eq!(implementation.calls.load(std::sync::atomic::Ordering::Relaxed), 1);
     assert_eq!(
         original,
         Snapshot::compile(&world, 1, inputs.clone(), SnapshotLimits::default()).unwrap()
@@ -275,145 +223,30 @@ fn geometry_retention_is_bound_to_shape_and_transform_not_revision_or_identity_a
     let mut changed = inputs.clone();
     changed[1].transform.angles[1] = 90.0;
     let next = original.recompile(&world, 2, changed.clone()).unwrap();
-    assert!(Arc::ptr_eq(
-        &original.objects[0].prepared,
-        &next.objects[0].prepared
-    ));
-    assert!(!Arc::ptr_eq(
-        &original.objects[1].prepared,
-        &next.objects[1].prepared
-    ));
+    let query = |snapshot: &Snapshot, index: usize| match &snapshot.objects[index].shape {
+        SnapshotShape::Physics(query) => Arc::clone(query),
+        _ => panic!("physical query"),
+    };
+    assert!(Arc::ptr_eq(&query(&original, 0), &query(&next, 0)));
+    assert!(Arc::ptr_eq(&query(&original, 1), &query(&next, 1)));
     assert_eq!(
         next,
         Snapshot::compile(&world, 2, changed, SnapshotLimits::default()).unwrap()
     );
     let mut replaced = inputs;
-    replaced[0].shape = SnapshotShape::Physics(Arc::new((*shape).clone()));
+    replaced[0].shape = SnapshotShape::Physics(Arc::new(FixturePhysicsQuery { geometry: Arc::new((*shape).clone()), calls: Default::default() }));
     let replaced = original.recompile(&world, 3, replaced).unwrap();
-    assert!(!Arc::ptr_eq(
-        &original.objects[0].prepared,
-        &replaced.objects[0].prepared
-    ));
-    assert!(Arc::ptr_eq(
-        &original.objects[1].prepared,
-        &replaced.objects[1].prepared
-    ));
-}
-
-#[test]
-#[ignore = "requires the exact configured Upward content graph"]
-fn configured_upward_convex_topology_and_sweep_equivalence() {
-    use playsrc_asset_graph::{ResourceGraph, decode};
-    use std::{fs, path::PathBuf, time::Instant};
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../..");
-    let config: serde_json::Value =
-        serde_json::from_slice(&fs::read(root.join("playsrc.local.json")).unwrap()).unwrap();
-    let cache = PathBuf::from(config["sourceCacheDir"].as_str().unwrap());
-    let graph: ResourceGraph = serde_json::from_slice(
-        &fs::read(cache.join("browser-bundles/pl_upward.graph.json")).unwrap(),
-    )
-    .unwrap();
-    let started = Instant::now();
-    let mut random = Random(0x183180);
-    let mut totals = [0_usize; 5];
-    let bsp = playsrc_bsp::parse(
-        &fs::read(PathBuf::from(config["tf2Dir"].as_str().unwrap()).join("maps/pl_upward.bsp"))
-            .unwrap(),
-        playsrc_bsp::Profile::Source2013V20,
-        playsrc_bsp::Limits::default(),
-    )
-    .unwrap();
-    let props = playsrc_bsp::parse_static_props(&bsp, playsrc_bsp::Limits::default())
-        .unwrap()
-        .unwrap();
-    let vector = |value: playsrc_bsp::Vector3| [value.x.value(), value.y.value(), value.z.value()];
-    let mut occurrence_count = 0;
-    for chunk in &graph.chunks {
-        if !chunk
-            .entries
-            .iter()
-            .any(|entry| entry.logical_path.ends_with(".phy"))
-        {
-            continue;
-        }
-        let encoded = fs::read(
-            cache
-                .join("browser-bundles/pl_upward.graph/objects")
-                .join(&chunk.encoded_sha256),
-        )
-        .unwrap();
-        for entry in decode(chunk, &encoded)
-            .unwrap()
-            .into_iter()
-            .filter(|entry| entry.logical_path.ends_with(".phy"))
-        {
-            let asset = playsrc_phy::parse_standalone(
-                &entry.bytes,
-                playsrc_phy::Profile::SourcePcPolygon,
-                playsrc_phy::Limits::default(),
-            )
-            .unwrap();
-            if asset.solids.is_empty()
-                || asset.solids[0].classification != PhyClassification::Handled
-            {
-                continue;
-            }
-            let shape =
-                PhysicsShape::from_phy(1, &asset, 0, SnapshotLimits::default(), |_| 1).unwrap();
-            let mut directions = [0, 0];
-            for prop in props.occurrences.iter().filter(|prop| prop.solidity == 6) {
-                let model =
-                    String::from_utf8(props.dictionary[usize::from(prop.model)].name.clone())
-                        .unwrap();
-                if model
-                    .strip_suffix(".mdl")
-                    .map(|path| format!("{path}.phy"))
-                    .as_deref()
-                    != Some(&entry.logical_path)
-                {
-                    continue;
-                }
-                occurrence_count += 1;
-                let transform = Transform {
-                    origin: vector(prop.origin),
-                    angles: vector(prop.angles),
-                };
-                for convex in &shape.convexes {
-                    compare(convex, transform, 12, &mut random);
-                }
-            }
-            for convex in &shape.convexes {
-                let transform = Transform {
-                    origin: random.vector(16000.0),
-                    angles: random.vector(180.0),
-                };
-                let (before, after) = compare(convex, transform, 24, &mut random);
-                directions[0] += before;
-                directions[1] += after;
-            }
-            let (_, vertices, triangles) = shape.counts();
-            println!(
-                "{} convexes={} vertices={vertices} triangles={triangles} directions={}/{}",
-                entry.logical_path,
-                shape.convex_count(),
-                directions[0],
-                directions[1]
-            );
-            for (sum, value) in totals.iter_mut().zip([
-                shape.convex_count(),
-                vertices,
-                triangles,
-                directions[0],
-                directions[1],
-            ]) {
-                *sum += value;
-            }
-        }
-    }
-    println!(
-        "configured totals {totals:?}, solid static occurrences={occurrence_count}, elapsed {:?}",
-        started.elapsed()
-    );
-    assert!(totals[0] > 0);
-    assert!(totals[4] < totals[3]);
+    assert!(!Arc::ptr_eq(&query(&original, 0), &query(&replaced, 0)));
+    assert!(Arc::ptr_eq(&query(&original, 1), &query(&replaced, 1)));
+    let follower = Snapshot::compile(&world, 4, vec![object(100, [0.0; 3], SnapshotShape::Follower {
+        parent: 7, query: implementation.clone(),
+    })], SnapshotLimits::default()).unwrap();
+    let request = SnapshotRayRequest { start: [-5.0, 1.0, 1.0], end: [15.0, 1.0, 1.0], mask: 1, scope: TraceScope::Everything, ignored: &[] };
+    let hit = world.trace_snapshot_ray(&follower, request, |candidate| { assert_eq!(candidate.identity, 100); true }).unwrap();
+    assert_eq!(hit.entity_identity(), Some(7));
+    assert!(!world.trace_snapshot_ray(&follower, SnapshotRayRequest { ignored: &[7], ..request }, |_| panic!("owner rejection precedes filtering")).unwrap().did_hit());
+    assert!(!world.trace_snapshot_ray(&follower, SnapshotRayRequest { ignored: &[100], ..request }, |_| panic!("collider rejection precedes filtering")).unwrap().did_hit());
+    let bytes = follower.snapshot_bytes().unwrap();
+    assert_eq!(bytes[52 + 68], 4);
+    assert_eq!(u64::from_le_bytes(bytes[52 + 69..52 + 77].try_into().unwrap()), 7);
 }

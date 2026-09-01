@@ -13,6 +13,7 @@ const BUILD_INPUTS = Object.freeze([
   "rust-toolchain.toml",
   "tools/playsrc/toolchains.json",
   "tools/playsrc/src/tf2-wasm-build.ts",
+  "tools/playsrc/src/source-bundle.ts",
   "tools/playsrc/src/build-identity.ts",
   ".cargo",
   ":(glob)**/*.rs",

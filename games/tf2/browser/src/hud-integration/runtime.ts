@@ -75,7 +75,7 @@ export type Tf2HudModelPanel = Readonly<{
 export type Tf2HudIntegration = Readonly<{
   publish(publication: SessionSimulationPublication, context: SessionHudContext): Tf2HudBinding
   action(action: Tf2HudAction): Tf2HudAvailability<Tf2HudCommand>
-  frame(timeSeconds: number): void
+  frame(timeSeconds: number, visible?: boolean): void
   setViewport(viewport: VguiViewport): void
   probe(): Tf2HudIntegrationProbe
   modelPanel(): Tf2HudModelPanel | null
@@ -154,6 +154,8 @@ const NOTIFICATION_FILES = Object.freeze([
 const HUD_SPY_METER = "resource/ui/huditemeffectmeter_spy.res"
 const HUD_SPY_DISGUISE_MENU = "resource/ui/disguise_menu/hudmenuspydisguise.res"
 const HUD_MEDIC_CHARGE = "resource/ui/hudmediccharge.res"
+const HUD_DEMOMAN_PIPES = "resource/ui/huddemomanpipes.res"
+const HUD_DEMOMAN_CHARGE = "resource/ui/huddemomancharge.res"
 const scalar = (node: VguiResourceNode, name: string): string | null =>
   node.children.find((child) => child.name.toLowerCase() === name.toLowerCase() && child.value !== null)?.value ?? null
 const node = (name: string, children: readonly VguiResourceNode[]): VguiResourceNode => Object.freeze({ name, value: null, condition: null, children: Object.freeze(children) })
@@ -283,10 +285,20 @@ class Integration implements Tf2HudIntegration {
   #lastRoundEventTick = -1n
   #destroyed = false
   #controlPoints?: ControlPointHud
+  #demomanPanels!: Readonly<{
+    pipes: VguiPanelId; present: VguiPanelId; absent: VguiPanelId;
+    shieldLabel: VguiPanelId; shieldMeter: VguiPanelId;
+    charge: VguiPanelId; chargeMeter: VguiPanelId;
+    images: readonly Readonly<{ panel: VguiPanelId; red: string; blue: string }>[];
+  }>
+  #pipeTick: number
+  #lastPipeCount = -1
+  #demoman: Readonly<{ pipesVisible: boolean; chargeVisible: boolean; count: number; progress: number | null }> | null = null
 
   constructor(request: Tf2HudIntegrationRequest) {
     this.#resources = request.resources
     this.#clock = request.clock
+    this.#pipeTick = Math.floor(request.clock.nowSeconds() * 1000) + 100
     this.#onCommand = request.onCommand
     this.#cloakLabel = request.resources.localization.tokens.find(token => token.name.toLowerCase() === "tf_cloak")?.value
     this.#viewport = Object.freeze({ ...request.viewport })
@@ -327,6 +339,8 @@ class Integration implements Tf2HudIntegration {
       ["HudCrosshair", "CTFHudElement"],
       ["HudDeathNotice", "CTFHudElement"],
       ["HudMedicCharge", "CTFHudElement"],
+      ["HudDemomanPipes", "CTFHudElement"],
+      ["HudDemomanCharge", "CTFHudElement"],
     ] as const
     for (const [name, control] of roots) apply(this.#runtime, { kind: "create-panel", parent: 1, control, name })
     const layout = request.resources.document(HUD_LAYOUT)
@@ -395,6 +409,31 @@ class Integration implements Tf2HudIntegration {
     }
     applyPanelResource(this.#runtime, find(this.#runtime, "HudMenuSpyDisguise")!, request.resources.document(HUD_SPY_DISGUISE_MENU), selection)
     applyPanelResource(this.#runtime, find(this.#runtime, "HudMedicCharge")!, request.resources.document(HUD_MEDIC_CHARGE), selection)
+    const pipes = find(this.#runtime, "HudDemomanPipes")!
+    const charge = find(this.#runtime, "HudDemomanCharge")!
+    const images: Array<{ panel: VguiPanelId; red: string; blue: string }> = []
+    for (const [root, resource] of [[pipes, HUD_DEMOMAN_PIPES], [charge, HUD_DEMOMAN_CHARGE]] as const) {
+      const source = request.resources.document(resource)
+      applyPanelResource(this.#runtime, root, source, selection)
+      const collect = (blocks: readonly VguiResourceNode[], parent: VguiPanelId) => {
+        for (const block of blocks.filter(block => block.value === null && scalar(block, "ControlName") !== null)) {
+          const panel = find(this.#runtime, scalar(block, "fieldName") ?? block.name, parent)
+          if (panel === null) throw new Error(`TF2 Demoman HUD panel is unavailable: ${block.name}`)
+          const red = scalar(block, "teambg_2"), blue = scalar(block, "teambg_3")
+          if (red && blue) images.push({ panel, red, blue })
+          collect(resourceChildren(block), panel)
+        }
+      }
+      collect(source.root.children, root)
+      apply(this.#runtime, { kind: "set-panel-state", panel: root, visible: false })
+    }
+    const child = (name: string, parent: VguiPanelId) => {
+      const panel = find(this.#runtime, name, parent)
+      if (panel === null) throw new Error(`TF2 Demoman HUD panel is unavailable: ${name}`)
+      return panel
+    }
+    this.#demomanPanels = Object.freeze({ pipes, charge, present: child("PipesPresentPanel", pipes), absent: child("NoPipesPresentPanel", pipes),
+      shieldLabel: child("ChargeLabel", pipes), shieldMeter: child("ChargeMeter", pipes), chargeMeter: child("ChargeMeter", charge), images })
     const panels = this.#runtime.snapshot().panels
     for (const panel of panels) {
       if (!this.#panels.has(panel.name.toLowerCase())) this.#panels.set(panel.name.toLowerCase(), panel.id)
@@ -1125,6 +1164,11 @@ class Integration implements Tf2HudIntegration {
 
   publish(publication: SessionSimulationPublication, context: SessionHudContext): Tf2HudBinding {
     if (this.#destroyed) throw new Error("TF2 HUD integration is destroyed")
+    const source = publication.snapshot
+    if (!Number.isInteger(source.pipebombCount) || source.pipebombCount < 0 || source.pipebombCount > 31
+      || source.chargeProgress !== null && (!Number.isFinite(source.chargeProgress) || source.chargeProgress < 0 || source.chargeProgress > 1)) {
+      throw new Error("Demoman HUD count/charge is not authoritative")
+    }
     return this.#runtime.deferPresentation(() => {
     const adapted = adaptSessionHud(this.#previous, publication, context)
     const binding = bindTf2Hud(adapted)
@@ -1165,6 +1209,15 @@ class Integration implements Tf2HudIntegration {
     this.#deathNotices.publish(binding, Math.fround(Math.fround(Number(publication.snapshot.tick)) * Math.fround(0.015)), Math.fround(0.015))
     const countMeter = weaponCountMeter(publication.snapshot, context.inventory)
     const countLive = binding.facts.player.kind === "available" && !binding.facts.player.value.liveHudSuppressed
+    const live = countLive && source.lifecycle === 1 && (source.conditions[2] & (1 << (77 - 64))) === 0
+    this.#demoman = { pipesVisible: live && source.class === 4, chargeVisible: live && source.chargeProgress !== null,
+      count: source.pipebombCount, progress: source.chargeProgress }
+    this.#objectiveValue("pipes:visible", String(this.#demoman.pipesVisible), { kind: "set-panel-state", panel: this.#demomanPanels.pipes, visible: this.#demoman.pipesVisible })
+    this.#objectiveValue("charge:visible", String(this.#demoman.chargeVisible), { kind: "set-panel-state", panel: this.#demomanPanels.charge, visible: this.#demoman.chargeVisible })
+    if (source.team === 2 || source.team === 3) for (const image of this.#demomanPanels.images) {
+      const value = source.team === 2 ? image.red : image.blue
+      this.#objectiveValue(`demoman-image:${image.panel}`, value, { kind: "mutate-control", panel: image.panel, mutation: { image: value } })
+    }
     for (const [kind, meter] of this.#countMeters) {
       const visible = countLive && countMeter?.kind === kind
       this.#objectiveValue(`count:${kind}:visible`, String(visible), { kind: "set-panel-state", panel: meter.root, visible })
@@ -1222,8 +1275,31 @@ class Integration implements Tf2HudIntegration {
     return command
   }
 
-  frame(timeSeconds: number): void {
-    apply(this.#runtime, { kind: "frame", timeSeconds })
+  frame(timeSeconds: number, visible = true): void {
+    const milliseconds = Math.floor(timeSeconds * 1000)
+    if (!visible) {
+      if (milliseconds >= this.#pipeTick) this.#pipeTick = milliseconds + 100
+      return
+    }
+    this.#runtime.deferPresentation(() => {
+      apply(this.#runtime, { kind: "frame", timeSeconds })
+      const state = this.#demoman, panels = this.#demomanPanels
+      if (milliseconds >= this.#pipeTick) {
+        this.#pipeTick = milliseconds + 100
+        if (state?.pipesVisible) {
+          if (state.count !== this.#lastPipeCount) {
+            for (const panel of [panels.present, panels.absent]) apply(this.#runtime, { kind: "set-dialog-variable", panel, name: "activepipes", value: state.count })
+            apply(this.#runtime, { kind: "set-panel-state", panel: panels.present, visible: state.count > 0 })
+            apply(this.#runtime, { kind: "set-panel-state", panel: panels.absent, visible: state.count <= 0 })
+            this.#lastPipeCount = state.count
+          }
+          for (const panel of [panels.shieldLabel, panels.shieldMeter]) this.#objectiveValue(`shield-hidden:${panel}`, "false", { kind: "set-panel-state", panel, visible: false })
+        }
+      }
+      if (state && state.progress !== null) this.#objectiveValue("launcher-charge", String(state.progress), {
+        kind: "mutate-control", panel: panels.chargeMeter, mutation: { progress: state.progress },
+      })
+    })
     this.#damage?.frame(timeSeconds, this.#viewport)
     for (const deltas of this.#timerDeltas.values()) if (deltas.active) {
       this.#runtime.deferPresentation(() => {
@@ -1256,6 +1332,7 @@ class Integration implements Tf2HudIntegration {
   probe(): Tf2HudIntegrationProbe {
     const panels = [
       "PlayerStatusHealthImage", "HudWeaponAmmo", "HudWeaponAmmoBG", "modelpanel0",
+      "HudDemomanPipes", "PipesPresentPanel", "NoPipesPresentPanel", "HudDemomanCharge",
       "PlayerStatusClassImage", "PlayerStatusClassImageBG", "classmodelpanel", "classmodelpanelBG",
       "PlayerStatusSpyImage", "PlayerStatusSpyOutlineImage", "PlayerStatus_WheelOfDoom", "scoreinfo",
       "HudObjectiveStatus", "ObjectiveStatusFlagPanel", "BlueFlag", "RedFlag", "CarriedImage", "CaptureFlag", "BlueScore", "RedScore", "PlayingTo", "NotificationPanel", "Notification_Label", "WinPanel", "WinningTeamLabel", "WinReasonLabel",
@@ -1356,6 +1433,8 @@ class Integration implements Tf2HudIntegration {
       this.#previous = unavailable
       this.#binding = null
       this.#scope.hide()
+      this.#demoman = null
+      for (const panel of [this.#demomanPanels.pipes, this.#demomanPanels.charge]) apply(this.#runtime, { kind: "set-panel-state", panel, visible: false })
       this.#damage?.reset()
       this.#animationTrace.length = 0
       if (this.#objective) {
