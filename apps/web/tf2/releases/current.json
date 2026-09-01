@@ -5,14 +5,14 @@
     "wasm": {
       "kind": "derived-object",
       "mediaType": "application/octet-stream",
-      "byteLength": "9360507",
-      "sha256": "108f68333f6919b71a32c3338c62db17c05639098b1180ef943d58d9e4a4dcb2"
+      "byteLength": "11480199",
+      "sha256": "8c6021c6bba09defa3f03a890821b1ccbee81ddaab129e0f142c6927d31f4b40"
     },
     "catalog": {
       "kind": "catalog",
       "mediaType": "application/vnd.playsrc.asset-catalog+json",
       "byteLength": "3348",
-      "sha256": "6ab9f57cd7de19a3585327c30b9deed2ea835f54ecf7ed4dc1384910d4c707e5"
+      "sha256": "f6df8eb04595bdfc8448e11e74953200555cb855b0cd8ba4fcfa98e25dab5bee"
     }
   },
   "wasmBindings": [
@@ -41,14 +41,14 @@
         "resources": {
           "kind": "source-root",
           "mediaType": "application/vnd.playsrc.resource-graph+json",
-          "byteLength": "965827",
-          "sha256": "95b3f2cdb9162f3de7f0bedfb068eb228a59d981c37feb4c06d84802cde5e9b9"
+          "byteLength": "976749",
+          "sha256": "b6ee1bd5f9553ccb0d55d57bf86c4c2ec26fa6aa395a717fa0b263df693c42e6"
         },
         "dependencyLedger": {
           "kind": "derived-object",
           "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
-          "byteLength": "2587271",
-          "sha256": "a5e7b4eec694ddecb3ccb880ef101c868a4380331e087d50e3e6297bad0a2062"
+          "byteLength": "2620827",
+          "sha256": "4c95bedf250e43897c847c0aad6bead73faeea8d8fdd51c90647c398cc5bc294"
         }
       }
     },
@@ -65,14 +65,14 @@
         "resources": {
           "kind": "source-root",
           "mediaType": "application/vnd.playsrc.resource-graph+json",
-          "byteLength": "1375234",
-          "sha256": "8718cba2505d28ec4a8a1b205bf3bb0c786a35e82bf41b0b0cdb7bd619b4812e"
+          "byteLength": "1385886",
+          "sha256": "99a15637bf878f83a4816fb16d5abb8474289f507200887ced1f2ed2ebc05eaa"
         },
         "dependencyLedger": {
           "kind": "derived-object",
           "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
-          "byteLength": "5400060",
-          "sha256": "3a995b6d9fb84710425fb666b7c5f140d72c5f2dd7771ceb15d43b6fe6b14993"
+          "byteLength": "5433616",
+          "sha256": "2b0557c95785bcefaa173f1fbfb3a57fbc8a102567552cfb98969151aa9f342b"
         }
       }
     },
@@ -89,14 +89,14 @@
         "resources": {
           "kind": "source-root",
           "mediaType": "application/vnd.playsrc.resource-graph+json",
-          "byteLength": "1437266",
-          "sha256": "488711b37ef5d87819f03693a12d5954ef3114ff9233aff72d2a897a81ea1c6f"
+          "byteLength": "1448189",
+          "sha256": "ed6b0be856489f6059e25c97d6156a703f2ee90e287ae83189eb96ae6604f0ac"
         },
         "dependencyLedger": {
           "kind": "derived-object",
           "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
-          "byteLength": "6586080",
-          "sha256": "608072a10d26a13979bccea5b05e88bc75e7e4cb4bd8b006d600ccda9de4a0ec"
+          "byteLength": "6619636",
+          "sha256": "1b9f60761552e40136f7f70fc9656f61dd5a69757cb83169089d15f5037354b7"
         }
       }
     },
@@ -113,14 +113,14 @@
         "resources": {
           "kind": "source-root",
           "mediaType": "application/vnd.playsrc.resource-graph+json",
-          "byteLength": "1377524",
-          "sha256": "327c111080a36c6ac8f61c11b9dfdc8fe52bfbe9126924ac2ba8bbd817cf2cb2"
+          "byteLength": "1388447",
+          "sha256": "0867f1d24ac45f5ad48ecef4b1716b7ddd3e5a8c850478d4809c25ed0a011d69"
         },
         "dependencyLedger": {
           "kind": "derived-object",
           "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
-          "byteLength": "6101748",
-          "sha256": "473dd6a5d3106b752e938418ac8a57e14306f800ba1d2f0c77bc298113ea6eb6"
+          "byteLength": "6135304",
+          "sha256": "7f6e745cb428059432e60f83401ba3fe21e47841520c16b9f93e05fb9304d512"
         }
       }
     },
@@ -137,14 +137,14 @@
         "resources": {
           "kind": "source-root",
           "mediaType": "application/vnd.playsrc.resource-graph+json",
-          "byteLength": "1291844",
-          "sha256": "a5af8ce4b0ec79b6902e24e3dd9a8b23a1c315f69704e25e9a3642b78c436fec"
+          "byteLength": "1302766",
+          "sha256": "88370b93489f0d9f5897633771cb5556f8afac75dd3b5bd12f7d77bb2f7a3c16"
         },
         "dependencyLedger": {
           "kind": "derived-object",
           "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
-          "byteLength": "5598001",
-          "sha256": "8e065c8eac7d466b1e64ee121b7ed2085a05eaaf70aab91c4154dae342283486"
+          "byteLength": "5631557",
+          "sha256": "42df50d809f07c4b52f05e0b510c25b09811dbbd57b87ea80bc1746a7e166285"
         }
       }
     },
@@ -161,14 +161,14 @@
         "resources": {
           "kind": "source-root",
           "mediaType": "application/vnd.playsrc.resource-graph+json",
-          "byteLength": "1281432",
-          "sha256": "21017f73b9da4ca5d6ef65bdb4222b3e94bc7757678fab6baf621ca9895dccd3"
+          "byteLength": "1292354",
+          "sha256": "42ddcce126b718c156a2480909cad3b57f86e735e73480d098c9f4e86e536785"
         },
         "dependencyLedger": {
           "kind": "derived-object",
           "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
-          "byteLength": "4894674",
-          "sha256": "bb277a0d7821c32b470ac3ad15ac2f18f4f431f3a0219eae437d32a124950ee0"
+          "byteLength": "4928230",
+          "sha256": "491e6a83c7a0ff4dfe80e3b6eaca750f3012e062448bfa84c4370c3da4b2cd72"
         }
       }
     },
@@ -185,14 +185,14 @@
         "resources": {
           "kind": "source-root",
           "mediaType": "application/vnd.playsrc.resource-graph+json",
-          "byteLength": "1316210",
-          "sha256": "c29d336a76455bd07938741cec8fd071b468cbeca900c8688b479704b6f56148"
+          "byteLength": "1326697",
+          "sha256": "843b8580b24f199f2a0ac1c6d3f9b43bae242124f51b0c0660adeecfe7f76b57"
         },
         "dependencyLedger": {
           "kind": "derived-object",
           "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
-          "byteLength": "5344221",
-          "sha256": "4c563fdf97a4f435ed7f7a4a04049fa72be7c12611a728e47b54202deb997977"
+          "byteLength": "5377235",
+          "sha256": "d0f2684e6e7f2b29a0ae71458092b3d0824d4209fdee4188efc9652e05488f0e"
         }
       }
     },
@@ -209,14 +209,14 @@
         "resources": {
           "kind": "source-root",
           "mediaType": "application/vnd.playsrc.resource-graph+json",
-          "byteLength": "1378633",
-          "sha256": "4834102aa71fe75515c8ef8bb78267d2ead4d1b249a08198c1d8e1cab842dfc5"
+          "byteLength": "1389120",
+          "sha256": "bbb0391f7007f91df98e6b5845dd38b3ad3b1352bf41f217e58cdf8c784c72d2"
         },
         "dependencyLedger": {
           "kind": "derived-object",
           "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
-          "byteLength": "5950100",
-          "sha256": "37fd5d893a2ddc72e3694901f977a401a8463b1116ff51dcb29d30cbbd5aeb12"
+          "byteLength": "5983114",
+          "sha256": "a11a57108759c4d315ab776f5f61261a53118a6a6934b3eaecb8a442cc64a1a5"
         }
       }
     },
@@ -233,14 +233,14 @@
         "resources": {
           "kind": "source-root",
           "mediaType": "application/vnd.playsrc.resource-graph+json",
-          "byteLength": "1341861",
-          "sha256": "3690dcc233026d828317b170ddb9acf95ddb3c6b8d9ff6e7092068d431373f62"
+          "byteLength": "1352783",
+          "sha256": "809851dc8b3d4fee63fcdecf9a4478c106df5d3a406d6da7cd6c1640ae1ff435"
         },
         "dependencyLedger": {
           "kind": "derived-object",
           "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
-          "byteLength": "5375799",
-          "sha256": "7eda1268f5abb7b7a259089d39410eacecf1f5c6838330c3a8681dc34eb64d31"
+          "byteLength": "5409355",
+          "sha256": "2df9b2587cff998cadc52c6730a6aa4102d8acfda7613d4361ffbfda730f9f17"
         }
       }
     },
@@ -257,14 +257,14 @@
         "resources": {
           "kind": "source-root",
           "mediaType": "application/vnd.playsrc.resource-graph+json",
-          "byteLength": "1261112",
-          "sha256": "10cd0d7f0e14b88ee7f67a8923aa75522085365db66f3c6cffb5a70ada6841ff"
+          "byteLength": "1271598",
+          "sha256": "0421b5a83662c2a1f09aca64981fb0edecb761594caf390cca01957a32e2a187"
         },
         "dependencyLedger": {
           "kind": "derived-object",
           "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
-          "byteLength": "4999832",
-          "sha256": "23fb741c880b2a376723255f0c7dd1aee93289ed43ab73a0adbf554ff46a92b7"
+          "byteLength": "5032846",
+          "sha256": "02e54a36cfe25169a0f24ae2f26c945079fc141a727f89c94e8e0c9f730f3418"
         }
       }
     },
@@ -281,14 +281,14 @@
         "resources": {
           "kind": "source-root",
           "mediaType": "application/vnd.playsrc.resource-graph+json",
-          "byteLength": "1269214",
-          "sha256": "f2c3460d0028d51a223ce64d1002e19f285a34b3b70a3ec89662e16638a8c00d"
+          "byteLength": "1280136",
+          "sha256": "f2b8c08b9ccc065e88c9e2c57de3c760f6df9246492688181f4e171288fc3766"
         },
         "dependencyLedger": {
           "kind": "derived-object",
           "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
-          "byteLength": "5307684",
-          "sha256": "9d4102a0d51346808a7e351863886b35f154dc69d1544c1950fc874ccb279ec9"
+          "byteLength": "5341240",
+          "sha256": "935ff0596adf208c17f8f44fc117163933ba2b5f52a669d72921b9ada383daf0"
         }
       }
     },
@@ -305,14 +305,14 @@
         "resources": {
           "kind": "source-root",
           "mediaType": "application/vnd.playsrc.resource-graph+json",
-          "byteLength": "1233710",
-          "sha256": "c037940ef5e1ef30bbeb8ee8be58ba72f3241e4b6d48da4a1f89224cfa9248a7"
+          "byteLength": "1244632",
+          "sha256": "515b6d50fb13631a262130ef8d48e7c427c66f3471e76963a6330d5bb4897750"
         },
         "dependencyLedger": {
           "kind": "derived-object",
           "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
-          "byteLength": "5110883",
-          "sha256": "bde22d34224ada2e6593d470e35aaec999967345155b2f0595d5f590bdd482bf"
+          "byteLength": "5144439",
+          "sha256": "baffb1a14ab9cc4d2b3e37c10c25f5a9e584394ab04b27748dc24ce6c9c6b62b"
         }
       }
     },
@@ -329,14 +329,14 @@
         "resources": {
           "kind": "source-root",
           "mediaType": "application/vnd.playsrc.resource-graph+json",
-          "byteLength": "1189390",
-          "sha256": "0fa42bde20301f21a6a2b69cf42029717773f41d1b697aecd024f7ce8ef9752d"
+          "byteLength": "1200312",
+          "sha256": "b400c61c65a2f816f0c3270c01139d38e4b680505a3533263454fcd15e0e2d42"
         },
         "dependencyLedger": {
           "kind": "derived-object",
           "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
-          "byteLength": "4121972",
-          "sha256": "f15d010e1dcbcda08ee5cea35a1ad03116c2b24a154bdee8412bff055ef6c3bd"
+          "byteLength": "4155528",
+          "sha256": "36f2672d1f53a727ebba28b6793288e6a19e5d122f7e69a7b64e759588edfa59"
         }
       }
     },
@@ -353,14 +353,14 @@
         "resources": {
           "kind": "source-root",
           "mediaType": "application/vnd.playsrc.resource-graph+json",
-          "byteLength": "1131606",
-          "sha256": "bcddd7737cea04c3d10e5af4688da47a626dd004e023fbdb3e58bbfce24c86fd"
+          "byteLength": "1142528",
+          "sha256": "10cf1641ed33cb2a2757ade1755e2c5a692a1598579f363e74b69c440524474f"
         },
         "dependencyLedger": {
           "kind": "derived-object",
           "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
-          "byteLength": "3792980",
-          "sha256": "2dfedfea68e3755ec996735b32597b75fe40a2c2566f97875f2c88058c6d072f"
+          "byteLength": "3826536",
+          "sha256": "74d68008e0f365b39cf405ed25d26a93fb584915a598316de7c9bfbf6251e7ae"
         }
       }
     },
@@ -377,14 +377,14 @@
         "resources": {
           "kind": "source-root",
           "mediaType": "application/vnd.playsrc.resource-graph+json",
-          "byteLength": "1212996",
-          "sha256": "07491546a06072429ee0e880b57441345198ee481f1437e3db53d05c91eef2cc"
+          "byteLength": "1223918",
+          "sha256": "bf935cd38a4cabd30eb3abdd96422a014daa4cbe972cee7e3d6d1b53d701b255"
         },
         "dependencyLedger": {
           "kind": "derived-object",
           "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
-          "byteLength": "4176161",
-          "sha256": "4b5c64870d7dda3fd79e2979f6bebb7d73ba0e0522ac32615e1cb13d9cf364fa"
+          "byteLength": "4209717",
+          "sha256": "9e8bb3090f8358c16281c4ae969766f5a385085f2a163fce09043999565a7d5b"
         }
       }
     }
