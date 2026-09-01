@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
 import { validateReleaseVersion } from "../src/release-version"
+import path from "node:path"
 
 test("default next patch and explicitly selected next minor", () => {
   validateReleaseVersion("0.0.13", "0.0.12", ["v0.0.12"])
@@ -7,6 +8,17 @@ test("default next patch and explicitly selected next minor", () => {
   validateReleaseVersion("0.1.1", "0.1.0", ["v0.1.0"])
   validateReleaseVersion("1.3.0", "1.2.9", [], "minor")
   validateReleaseVersion("0.10.1", "0.10.0", ["v0.9.99", "v0.10.0"])
+})
+
+test("workflow CLI reads remote tags from stdin and requires explicit minor selection", async () => {
+  const run = async (increment?: string) => {
+    const child = Bun.spawn([process.execPath, path.join(import.meta.dir, "../src/release-version.ts"), "0.1.0", "0.0.12", ...(increment ? [increment] : [])], {
+      stdin: new Blob(["v0.0.11\nv0.0.12\n"]), stdout: "pipe", stderr: "pipe",
+    })
+    return child.exited
+  }
+  expect(await run("minor")).toBe(0)
+  expect(await run()).not.toBe(0)
 })
 
 test("reject skipped, reused, major, floating, malformed and implicit minor versions", () => {
