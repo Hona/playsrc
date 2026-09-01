@@ -27,6 +27,7 @@ jobs:
           components: rust-src
       - run: bun install --frozen-lockfile
       - run: cargo +1.97.1 install wasm-bindgen-cli --version 0.2.126 --locked
+      - run: bun run build:tf2-wasm-bindings
       - name: Build once for headed acceptance and deployment
         run: bun tools/playsrc/src/prepare-release-package.ts
       - uses: actions/upload-artifact@v7

@@ -3,6 +3,18 @@ import { assertReleasePackageRun } from "../src/release-package-run"
 import { assertPreparedReleaseIdentity, assertReleaseStartupAcceptance } from "../src/deploy"
 import { createDeployedBrowserConfiguration, parseTf2Release } from "../../../apps/web/tf2/src/deployment"
 import releaseJson from "../../../apps/web/tf2/releases/current.json"
+import { readFileSync } from "node:fs"
+import path from "node:path"
+
+test("package workflow builds its inputs once; release downloads and validates before infrastructure", () => {
+  const workflow = (name: string) => readFileSync(path.join(import.meta.dir, "../../../.github/workflows", name), "utf8")
+  const prepare = workflow("prepare-release.yml"), release = workflow("release.yml")
+  expect(prepare.indexOf("bun run build:tf2-wasm-bindings")).toBeGreaterThan(0)
+  expect(prepare.indexOf("bun run build:tf2-wasm-bindings")).toBeLessThan(prepare.indexOf("src/prepare-release-package.ts"))
+  expect(release).not.toContain("build:tf2-wasm-bindings")
+  expect(release.indexOf("actions/download-artifact@")).toBeLessThan(release.indexOf("verify release-package"))
+  expect(release.indexOf("verify release-package")).toBeLessThan(release.indexOf("bun run infra:bootstrap"))
+})
 
 test("only a successful exact-source package workflow can supply deployment bytes", () => {
   const sha = "a".repeat(40), repository = "Hona/playsrc"
