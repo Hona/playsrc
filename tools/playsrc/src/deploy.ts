@@ -13,6 +13,7 @@ import { assertStaticBundleGeneration, STATIC_GENERATION_BUNDLE_PREFIXES } from 
 import { assertWasmBindings, captureWasmBindings } from "./wasm-bindings"
 import { staticStartupPackage } from "../profile/static-startup-package"
 import { assertStaticStartupReceipt } from "../profile/static-startup-gate"
+import { isDeepStrictEqual } from "node:util"
 
 const APP_DIRECTORY = path.join(repositoryRoot, "apps", "web", "tf2")
 const DIST_DIRECTORY = path.join(APP_DIRECTORY, "dist", "cloudflare")
@@ -192,10 +193,25 @@ export async function verifyCloudflareDeployment(target: string | undefined): Pr
   if (result.code !== 0) throw new DeploymentError(`Wrangler dry run failed: ${result.stderr.trim()}`)
 }
 
-export async function deployCloudflare(target: string | undefined): Promise<void> {
-  const applicationBuild = await buildStaticSite(target, { approved: true })
+/** Deployment consumes accepted bytes. Compiling here invalidates cross-host receipts. */
+export async function verifyPreparedRelease(target: string | undefined): Promise<Awaited<ReturnType<typeof staticStartupPackage>>> {
   const packaged = await staticStartupPackage(DIST_DIRECTORY)
+  const release = await readTf2Release(target)
+  const applicationBuild = await applicationBuildIdentity()
+  assertPreparedReleaseIdentity(packaged, release, applicationBuild)
+  await verifyStaticTree(packaged.configuration)
   assertReleaseStartupAcceptance({ packageSha256: packaged.sha256, wasmSha256: packaged.configuration.wasm.sha256 })
+  return packaged
+}
+
+export function assertPreparedReleaseIdentity(packaged: Pick<Awaited<ReturnType<typeof staticStartupPackage>>, "release" | "configuration">, release: Tf2Release, applicationBuild: string): void {
+  if (!isDeepStrictEqual(packaged.release, release)) throw new DeploymentError("Prepared package release descriptor differs from checked source")
+  if (!isDeepStrictEqual(packaged.configuration, createDeployedBrowserConfiguration(release, applicationBuild))) throw new DeploymentError("Prepared package configuration/source build differs from checked source")
+}
+
+export async function deployCloudflare(target: string | undefined): Promise<void> {
+  const packaged = await verifyPreparedRelease(target)
+  const applicationBuild = packaged.configuration.applicationBuild
   await verifyRemoteObjects(target)
   if ((await staticStartupPackage(DIST_DIRECTORY)).sha256 !== packaged.sha256) throw new DeploymentError("Static package changed after startup acceptance")
   await applyCloudflareInfrastructure()
@@ -214,6 +230,11 @@ export function assertReleaseStartupAcceptance(expected: { packageSha256: string
   let startup: unknown
   try { startup = JSON.parse(environment.PLAYSRC_STATIC_STARTUP_RECEIPT ?? "") }
   catch { throw new DeploymentError("Approved release requires its exact headed static-package startup receipt") }
+  const receipt = startup as { packageSha256?: unknown; wasmSha256?: unknown } | null
+  const hash = (value: unknown) => typeof value === "string" && /^[0-9a-f]{64}$/.test(value) ? value : "absent-or-invalid"
+  if (receipt?.packageSha256 !== expected.packageSha256 || receipt?.wasmSha256 !== expected.wasmSha256) {
+    throw new DeploymentError(`Startup receipt identity mismatch: accepted package=${hash(receipt?.packageSha256)} observed package=${hash(expected.packageSha256)}; accepted WASM=${hash(receipt?.wasmSha256)} observed WASM=${hash(expected.wasmSha256)}`)
+  }
   assertStaticStartupReceipt(startup, expected)
 }
 

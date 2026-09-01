@@ -23,6 +23,12 @@ async function main(): Promise<number> {
       await deployCloudflare(target)
       return 0
     }
+    if (command === "verify" && target === "release-package") {
+      const { verifyPreparedRelease } = await import("./deploy")
+      const packaged = await verifyPreparedRelease(undefined)
+      console.log(JSON.stringify({ packageSha256: packaged.sha256, applicationBuild: packaged.configuration.applicationBuild }))
+      return 0
+    }
     if (command === "verify" && target === "deploy") {
       const { verifyCloudflareDeployment } = await import("./deploy")
       await verifyCloudflareDeployment(argument)
