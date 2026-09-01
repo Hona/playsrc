@@ -126,7 +126,8 @@ export async function verifyRemoteObjects(prepared: Tf2Release, fetcher: typeof 
   }
 }
 
-async function waitForDeployment(target: string | undefined, applicationBuild: string): Promise<void> {
+async function waitForDeployment(release: Tf2Release, applicationBuild: string): Promise<void> {
+  const configuration = createDeployedBrowserConfiguration(release, applicationBuild)
   const deadline = Date.now() + READY_TIMEOUT_MILLISECONDS
   let last = "deployment did not respond"
   while (Date.now() < deadline) {
@@ -139,10 +140,6 @@ async function waitForDeployment(target: string | undefined, applicationBuild: s
       if (root.status !== 200 || tf2.status !== 200 || configurationResponse.status !== 200) {
         last = `route statuses were ${root.status}, ${tf2.status}, ${configurationResponse.status}`
       } else {
-        const configuration = createDeployedBrowserConfiguration(
-          parseTf2Release((await readTf2Release(target))),
-          applicationBuild,
-        )
         if (JSON.stringify(await configurationResponse.json()) === JSON.stringify(configuration)) return
         last = "deployed browser configuration differs"
       }
@@ -186,7 +183,7 @@ export async function deployCloudflare(target: string | undefined): Promise<void
   if ((await staticStartupPackage(DIST_DIRECTORY)).sha256 !== packaged.sha256) throw new DeploymentError("Static package changed before deployment")
   const result = await runWrangler(["deploy", `--config=${WRANGLER_CONFIG}`])
   if (result.code !== 0) throw new DeploymentError(`Wrangler deployment failed: ${result.stderr.trim()}`)
-  await waitForDeployment(target, applicationBuild)
+  await waitForDeployment(packaged.release, applicationBuild)
   console.log(JSON.stringify({ target, applicationBuild, url: `${TF2_APPLICATION_ORIGIN}/tf2` }))
 }
 
