@@ -33,6 +33,10 @@ export class Tf2EquipmentProfile {
     }
     const state = await this.client.equipment(0, mutation?.buffer as ArrayBuffer | undefined)
     if (this.#closed) throw new Error("Equipment profile was replaced")
+    if (saved !== null && saved !== undefined) {
+      const normalized = btoa(String.fromCharCode(...state.persistence))
+      if (normalized !== saved) this.storage?.setItem(STORAGE_KEY, normalized)
+    }
     this.#state = state
     return state
   }
