@@ -99,7 +99,7 @@ test("repeated sheet rectangles share frozen values without borrowing packet byt
   expect(first!.next[0]![0]).toBe(retained)
 })
 
-test("packet-local UUID reuse preserves all128 bits, alternating systems and retained values", () => {
+test("packet-local UUID reuse preserves all 128 bits, alternating systems and retained values", () => {
   const bytes = output({ count: 18 })
   for (let index = 1; index <= 16; index++) bytes[40 + index * 436 + 16 + index - 1] = index
   const expected = Array.from({ length: 18 }, (_, index) => Buffer.from(bytes.subarray(40 + index * 436 + 16, 40 + index * 436 + 32)).toString("hex"))
@@ -108,6 +108,24 @@ test("packet-local UUID reuse preserves all128 bits, alternating systems and ret
   bytes.fill(0xff, 40 + 16, 40 + 32)
   expect(retained.items.map(item => item.systemUuid)).toEqual(expected)
   expect(decodeParticleRenderOutput(bytes, ["smoke"]).items[0]!.systemUuid).toBe("ff".repeat(16))
+})
+
+test("repeated UUID runs preserve complete items and do not borrow an unaligned packet", () => {
+  const single = decodeParticleRenderOutput(output(), ["smoke"]).items[0]!
+  const packet = output({ count: 7 })
+  const storage = new Uint8Array(packet.length + 3)
+  storage.set(packet, 3)
+  const bytes = storage.subarray(3)
+  const systems = [0xab, 0xab, 0xab, 0xcd, 0xcd, 0xab, 0xab]
+  systems.forEach((value, index) => bytes.fill(value, 40 + index * 436 + 16, 40 + index * 436 + 32))
+  const expected = systems.map((value, index) => ({ ...single, identity: index + 1, systemUuid: value.toString(16).repeat(16) }))
+  const decoded = decodeParticleRenderOutput(bytes, ["smoke"])
+  expect(decoded.items).toEqual(expected)
+  expect(decoded.items.every(Object.isFrozen)).toBe(true)
+  bytes.fill(0)
+  expect(decoded.items).toEqual(expected)
+  expect(decodeParticleRenderOutput(output({ count: 0 }), ["smoke"]).items).toEqual([])
+  expect(decodeParticleRenderOutput(output(), ["smoke"]).items[0]).toEqual(single)
 })
 
 test("sheet cache bounds do not omit unique rectangles or accept a nonfinite late record", () => {

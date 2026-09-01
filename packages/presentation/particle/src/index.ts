@@ -179,7 +179,7 @@ export function decodeParticleRenderOutput(
   const sheets = new SheetImagesCache(view)
   // Consecutive particles commonly belong to one PCF system (notably weather).
   // Its immutable UUID does not need sixteen new string concatenations for
-  // every particle. Compare all128 bits; keep only this packet's last identity.
+  // every particle. Compare all 128 bits; keep only this packet's last identity.
   let identityOffset = -1, systemUuid = ""
   for (let index = 0; index < count; index += 1) {
     const offset = OUTPUT_HEADER_BYTES + index * OUTPUT_RECORD_BYTES
