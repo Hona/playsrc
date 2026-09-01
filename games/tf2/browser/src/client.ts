@@ -1112,7 +1112,6 @@ export function mergePublicationSnapshots(snapshots: readonly Snapshot[]): Snaps
     combatDecals: all("combatDecals"),
     activities: all("activities"),
     lifecycleEvents: all("lifecycleEvents"),
-    physicsRequests: all("physicsRequests"),
     rocketTraceRequests: all("rocketTraceRequests"),
     radiusDamageRequests: all("radiusDamageRequests"),
     moverRequests: all("moverRequests"),

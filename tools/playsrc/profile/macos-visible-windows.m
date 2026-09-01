@@ -22,6 +22,7 @@ int main(void) {
       @"locked": session[@"CGSSessionScreenIsLocked"] ?: @NO,
       @"idleMilliseconds": @(CGEventSourceSecondsSinceLastEventType(kCGEventSourceStateCombinedSessionState, kCGAnyInputEventType) * 1000) };
     NSData *json = [NSJSONSerialization dataWithJSONObject:@{ @"windows": output, @"screens": screens, @"console": console,
+      @"frontmostPid": @(NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier),
       @"cursorLayer": @(CGWindowLevelForKey(kCGCursorWindowLevelKey)) } options:0 error:nil];
     if (!json) return 1;
     fwrite(json.bytes, 1, json.length, stdout);

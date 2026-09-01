@@ -110,7 +110,7 @@ fn configured_authored_player_bot_contacts_and_button_outputs_publish_mover_chil
         let phase = if let Some(button) = button {
             // jump_beef authors damage buttons, not an approach trigger. Do not
             // invent proximity opening for these doors.
-            map.damage(1, button).unwrap()
+            map.damage(1, button, 1).unwrap()
         } else {
             let actor = ActorContact {
                 identity: 1000,

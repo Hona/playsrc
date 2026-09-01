@@ -23,6 +23,7 @@ Parse compiled Source 1 BSP files into bounded typed map data.
 - Expose format data needed by map, collision, visibility, entity, material, and lighting consumers.
 - Preserve all 64 raw descriptors, exact source ranges, overlaps, map revision, and bounded declared Source LZMA data before semantic interpretation.
 - Decode Source-2013 v20 entity, plane, texture-data, vertex, visibility-table, node, texture-info, face, light-sample, leaf, edge, surface-edge, model, leaf-index, brush, brush-side, displacement-info/vertex/triangle, vertex-normal, compiled-primitive, cubemap, and texture-string records while preserving float bits and padding.
+- Frame ordered BSP lump-29 physical models, exact collision/keydata byte ranges, solid counts, and the required terminating record without decoding PHY payloads.
 - Frame embedded ZIP32 PAK local and central records, comments, extras, encoded ranges, stored and ZIP-LZMA payloads, CRC-32 results, and unsupported method identities under caller limits.
 - Decode the explicit Source-2013 `sprp` v10 72-byte profile into lossless dictionary, leaf-reference, occurrence, flag, fade, skin, DX-level, lightmap-resolution, and flag-selected lighting-origin fields.
 - Accept complete byte inputs and bounded immutable HTTP-range inputs through one parser contract.

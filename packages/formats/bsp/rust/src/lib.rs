@@ -112,6 +112,14 @@ pub struct Bsp {
     source: Arc<[u8]>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PhysicsModel<'source> {
+    pub model_index: usize,
+    pub collision: &'source [u8],
+    pub keydata: &'source [u8],
+    pub solid_count: usize,
+}
+
 impl Bsp {
     pub fn source_bytes(&self) -> &[u8] {
         &self.source
@@ -129,6 +137,127 @@ impl Bsp {
         lump.pak = None;
         lump.decoded = Some(Vec::new());
         true
+    }
+
+    pub fn physics_models(
+        &self,
+        maximum_models: usize,
+    ) -> Result<Vec<PhysicsModel<'_>>, ParseError> {
+        let bytes = self.lumps[29].bytes(self);
+        if bytes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut models = Vec::new();
+        let mut offset = 0_usize;
+        loop {
+            let Some(header) = bytes.get(offset..offset.saturating_add(16)) else {
+                return Err(failure(
+                    ErrorCode::InvalidRecord,
+                    Some(29),
+                    offset..offset.saturating_add(16),
+                    None,
+                    None,
+                ));
+            };
+            let model = i32::from_le_bytes(header[0..4].try_into().expect("model field"));
+            let collision = i32::from_le_bytes(header[4..8].try_into().expect("collision field"));
+            let keydata = i32::from_le_bytes(header[8..12].try_into().expect("keydata field"));
+            let solids = i32::from_le_bytes(header[12..16].try_into().expect("solid field"));
+            offset += 16;
+            if model == -1 && collision == -1 {
+                if keydata != 0 || solids != 0 || offset != bytes.len() {
+                    return Err(failure(
+                        ErrorCode::InvalidRecord,
+                        Some(29),
+                        offset - 16..bytes.len(),
+                        None,
+                        None,
+                    ));
+                }
+                return Ok(models);
+            }
+            let (Ok(model_index), Ok(collision_size), Ok(keydata_size), Ok(solid_count)) = (
+                usize::try_from(model),
+                usize::try_from(collision),
+                usize::try_from(keydata),
+                usize::try_from(solids),
+            ) else {
+                return Err(failure(
+                    ErrorCode::InvalidRecord,
+                    Some(29),
+                    offset - 16..offset,
+                    None,
+                    None,
+                ));
+            };
+            if collision_size == 0 || keydata_size == 0 || solid_count == 0 {
+                return Err(failure(
+                    ErrorCode::InvalidRecord,
+                    Some(29),
+                    offset - 16..offset,
+                    None,
+                    None,
+                ));
+            }
+            if models.len() == maximum_models {
+                return Err(failure(
+                    ErrorCode::RecordBudget,
+                    Some(29),
+                    offset - 16..offset,
+                    Some(models.len() + 1),
+                    Some(maximum_models),
+                ));
+            }
+            if models
+                .iter()
+                .any(|prior: &PhysicsModel<'_>| prior.model_index == model_index)
+            {
+                return Err(failure(
+                    ErrorCode::InvalidRecord,
+                    Some(29),
+                    offset - 16..offset,
+                    Some(model_index),
+                    None,
+                ));
+            }
+            let Some(collision_end) = offset.checked_add(collision_size) else {
+                return Err(failure(
+                    ErrorCode::RangeOverflow,
+                    Some(29),
+                    offset..offset,
+                    None,
+                    None,
+                ));
+            };
+            let Some(keydata_end) = collision_end.checked_add(keydata_size) else {
+                return Err(failure(
+                    ErrorCode::RangeOverflow,
+                    Some(29),
+                    collision_end..collision_end,
+                    None,
+                    None,
+                ));
+            };
+            let (Some(collision), Some(keydata)) = (
+                bytes.get(offset..collision_end),
+                bytes.get(collision_end..keydata_end),
+            ) else {
+                return Err(failure(
+                    ErrorCode::TruncatedRange,
+                    Some(29),
+                    offset..keydata_end,
+                    Some(keydata_end),
+                    Some(bytes.len()),
+                ));
+            };
+            models.push(PhysicsModel {
+                model_index,
+                collision,
+                keydata,
+                solid_count,
+            });
+            offset = keydata_end;
+        }
     }
 }
 
@@ -609,6 +738,80 @@ mod tests {
         assert_eq!(bsp.lumps[8].encoded_bytes(&bsp), &[12, 34, 56, 78]);
         assert_eq!(bsp.source_bytes(), bytes);
         assert!(!bsp.release_lump_payload(LUMP_COUNT));
+    }
+
+    #[test]
+    fn frames_ordered_physics_models_without_decoding_collision_payloads() {
+        let mut bytes = empty_bsp();
+        let start = bytes.len();
+        for (model, collision, keydata, solids) in [
+            (0_i32, b"first".as_slice(), b"a\0".as_slice(), 2_i32),
+            (9_i32, b"next".as_slice(), b"bbb\0".as_slice(), 1_i32),
+        ] {
+            bytes.extend_from_slice(&model.to_le_bytes());
+            bytes.extend_from_slice(&(collision.len() as i32).to_le_bytes());
+            bytes.extend_from_slice(&(keydata.len() as i32).to_le_bytes());
+            bytes.extend_from_slice(&solids.to_le_bytes());
+            bytes.extend_from_slice(collision);
+            bytes.extend_from_slice(keydata);
+        }
+        for value in [-1_i32, -1, 0, 0] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        let length = bytes.len() - start;
+        set_lump(&mut bytes, 29, start as i32, length as i32, 0, 0);
+        let bsp = parse(&bytes, Profile::Source2013V20, Limits::default()).unwrap();
+        let models = bsp.physics_models(2).unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].model_index, 0);
+        assert_eq!(models[0].collision, b"first");
+        assert_eq!(models[0].keydata, b"a\0");
+        assert_eq!(models[0].solid_count, 2);
+        assert_eq!(models[1].model_index, 9);
+        assert_eq!(models[1].collision, b"next");
+        assert_eq!(
+            bsp.physics_models(1).unwrap_err().code,
+            ErrorCode::RecordBudget
+        );
+    }
+
+    #[test]
+    fn physics_model_framing_rejects_duplicates_truncation_and_invalid_terminator() {
+        let make = |payload: Vec<u8>| {
+            let mut bytes = empty_bsp();
+            let start = bytes.len();
+            bytes.extend_from_slice(&payload);
+            set_lump(&mut bytes, 29, start as i32, payload.len() as i32, 0, 0);
+            parse(&bytes, Profile::Source2013V20, Limits::default()).unwrap()
+        };
+        let mut duplicate = Vec::new();
+        for _ in 0..2 {
+            for value in [4_i32, 1, 1, 1] {
+                duplicate.extend_from_slice(&value.to_le_bytes());
+            }
+            duplicate.extend_from_slice(b"x\0");
+        }
+        assert_eq!(
+            make(duplicate).physics_models(4).unwrap_err().code,
+            ErrorCode::InvalidRecord
+        );
+        let mut truncated = Vec::new();
+        for value in [0_i32, 8, 1, 1] {
+            truncated.extend_from_slice(&value.to_le_bytes());
+        }
+        truncated.push(0);
+        assert_eq!(
+            make(truncated).physics_models(4).unwrap_err().code,
+            ErrorCode::TruncatedRange
+        );
+        let mut terminal = Vec::new();
+        for value in [-1_i32, -1, 0, 1] {
+            terminal.extend_from_slice(&value.to_le_bytes());
+        }
+        assert_eq!(
+            make(terminal).physics_models(4).unwrap_err().code,
+            ErrorCode::InvalidRecord
+        );
     }
 
     #[test]

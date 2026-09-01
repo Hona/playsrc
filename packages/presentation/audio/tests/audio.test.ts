@@ -294,6 +294,16 @@ function start(overrides: Partial<StartSound> = {}): StartSound {
 }
 
 describe("Source sound registry and neutral voice state", () => {
+  test("resolved impact volume and static channel survive neutral voice creation", () => {
+    const world = new SourceAudioWorld(new SoundRegistry([targetDocument]), { maxActiveVoices: 16 })
+    const overrides = { volume: Math.fround(0.3), channel: 6 as const }
+    const first = world.start(start({ overrides }))
+    const second = world.start(start({ voiceIdentity: 2, overrides }))
+    expect(first.voice.volume).toBe(Math.fround(0.3))
+    expect(first.voice.channel).toBe(6)
+    expect(second.replaced).toEqual([])
+    expect(world.voices()).toHaveLength(2)
+  })
   test("RIFF cue metadata loops an immediate patch start without inventing a fade envelope", () => {
     const world = new SourceAudioWorld(new SoundRegistry([targetDocument]), { maxActiveVoices: 16 })
     const { voice } = world.start(start({ resourceLoopStartSeconds: 0 }))

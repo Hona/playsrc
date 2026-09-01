@@ -209,7 +209,6 @@ fn configured_water_rocket_jump_preserves_source_hull_force_and_swim_order() {
                 movement: held_crouch,
                 ..Command::default()
             },
-            &[],
             &[RocketTraceResult {
                 projectile: request.projectile,
                 tick: session.producer_snapshot().tick,
@@ -335,7 +334,6 @@ fn configured_rockets_drive_every_linked_door_platform_cycle_and_locker_state() 
         let damaged = session
             .advance_with_external(
                 Command::default(),
-                &[],
                 &[RocketTraceResult {
                     projectile: request.projectile,
                     tick: session.producer_snapshot().tick,

@@ -45,6 +45,20 @@ export function profileNodeExecutable(): string {
   return node
 }
 
+export async function prepareProfileBrowserDependencies() {
+  const packageFile = path.join(repositoryRoot, "node_modules/@playwright/test/package.json")
+  const before = await fileFingerprint(packageFile)
+  const { version } = JSON.parse(await readFile(packageFile, "utf8")) as { version: string }
+  const child = Bun.spawn([profileNodeExecutable(), path.join(repositoryRoot, "node_modules/@playwright/test/cli.js"), "install", "chromium", "--no-shell"], {
+    cwd: repositoryRoot, stdin: "ignore", stdout: "inherit", stderr: "inherit",
+  })
+  if (await child.exited !== 0) throw new Error("Pinned Playwright Chromium preparation failed")
+  if (await fileFingerprint(packageFile) !== before) throw new Error("Playwright package changed during browser preparation")
+  const { chromium } = await import("@playwright/test")
+  const executable = chromium.executablePath()
+  return { playwrightVersion: version, packageSha256: before, executable, executableSha256: await fileFingerprint(executable) }
+}
+
 export async function browserLaunchIdentity(launch: BrowserLaunch): Promise<string> {
   return createHash("sha256").update(JSON.stringify(launch))
     .update(await fileFingerprint(import.meta.filename))

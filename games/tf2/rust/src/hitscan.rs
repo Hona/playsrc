@@ -21,12 +21,27 @@ pub struct Target {
     pub knocked_back: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DamageTarget {
+    Actor(u32),
+    Map(u32),
+    Projectile(u32),
+    Building(u32),
+}
+
+impl DamageTarget {
+    pub fn identity(self) -> u32 {
+        match self { Self::Actor(identity) | Self::Map(identity) | Self::Projectile(identity) | Self::Building(identity) => identity }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct DamageGroup {
-    pub victim: u32,
+    pub target: DamageTarget,
     pub amount: f32,
     pub range_multiplier: f32,
     pub position: [f32; 3],
+    pub force: [f32; 3],
     pub crit: crate::damage::CritKind,
     pub custom: crate::damage::CustomDamage,
 }

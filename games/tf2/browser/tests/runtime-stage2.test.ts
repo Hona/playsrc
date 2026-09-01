@@ -36,7 +36,7 @@ function snapshot(): ArrayBuffer {
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
-  view.setUint32(4, 31, true)
+  view.setUint32(4, 33, true)
   view.setFloat32(bytes.byteLength - 112, 1, true)
   view.setInt32(bytes.byteLength - 104, -1, true)
   view.setBigUint64(8, 7n, true)
@@ -128,7 +128,7 @@ function snapshot(): ArrayBuffer {
   view.setUint16(at+364,0x3ff,true); view.setUint16(at+366,0x3ff,true)
   at += 368
   data.set([0x43, 0x53, 0x4e, 0x50], at)
-  view.setUint32(at + 4, 3, true)
+  view.setUint32(at + 4, 4, true)
   data.fill(1,at+8,at+40)
   view.setBigUint64(at + 40, 7n, true)
   view.setUint32(at + 48, 0, true)
@@ -165,6 +165,94 @@ function snapshot(): ArrayBuffer {
   view.setUint32(at + 4, 0xffff_ffff, true)
   return bytes
 }
+
+test("PSSN33 carries launcher count independently of visible projectiles and preserves charge bits", () => {
+  const original = new Uint8Array(snapshot())
+  const data = new Uint8Array(original.length - 84)
+  data.set(original.subarray(0, 324))
+  data.set(original.subarray(408), 324)
+  const view = new DataView(data.buffer)
+  view.setUint32(60, 0, true)
+  data[16] = 4; data[18] = 3; data[276] = 3
+  view.setUint16(280, 7, true); view.setUint16(284, 8, true)
+  view.setFloat32(320, Math.fround(0.375), true)
+  for (const count of [0, 1, 8, 31]) {
+    view.setUint32(96, count, true)
+    const decoded = decodeSnapshot(data)
+    expect(decoded.projectiles).toHaveLength(0)
+    expect(decoded.pipebombCount).toBe(count)
+    expect(decoded.chargeProgress).toBe(0.375)
+    expect(decoded.loadout[0]!.chargedDamage).toBe(0)
+  }
+  view.setUint32(96, 32, true)
+  expect(() => decodeSnapshot(data)).toThrow("pipebomb count")
+  view.setUint32(96, 8, true)
+  for (const invalid of [-1, Math.fround(1.01), NaN, Infinity]) {
+    view.setFloat32(320, invalid, true)
+    expect(() => decodeSnapshot(data)).toThrow("loadout record")
+  }
+  view.setFloat32(320, 0, true); view.setUint32(4, 32, true)
+  expect(() => decodeSnapshot(data)).toThrow("snapshot identity")
+})
+
+test("sticky charge sound and pullback retain their native identities through the wire", () => {
+  const source = new Uint8Array(snapshot()), insert = 985
+  const data = new Uint8Array(source.length + 104), view = new DataView(data.buffer)
+  data.set(source.subarray(0, insert)); data.set(source.subarray(insert), insert + 104)
+  data[601] = 3; data[602] = 14
+  view.setUint32(132, 2, true)
+  for (let ordinal = 0; ordinal < 2; ordinal++) {
+    const at = insert + ordinal * 52
+    view.setBigUint64(at, 7n, true); view.setUint16(at + 8, ordinal, true)
+    data.set([2, 224, 1, 1, 0, ordinal], at + 10)
+    view.setUint32(at + 16, 1, true); view.setUint32(at + 20, 1, true)
+  }
+  const decoded = decodeSnapshot(data)
+  expect(decoded.activities[0]).toMatchObject({ weapon: 3, activity: 14 })
+  expect(tf2Audio(decoded).map(event => [event.definition, event.action])).toEqual([
+    ["Weapon_StickyBombLauncher.ChargeUp", "play"], ["Weapon_StickyBombLauncher.ChargeUp", "stop"],
+  ])
+  data[insert + 14] = 1
+  expect(() => decodeSnapshot(data)).toThrow("audio event record")
+})
+
+test("physical impact audio carries resolved volume and the static world channel", () => {
+  const source = new Uint8Array(snapshot()), insert = 985
+  const data = new Uint8Array(source.length + 52), view = new DataView(data.buffer)
+  data.set(source.subarray(0, insert)); data.set(source.subarray(insert), insert + 52)
+  view.setUint32(132, 1, true)
+  view.setBigUint64(insert, 7n, true)
+  data.set([6, 225, 2, 0, 2, 5], insert + 10)
+  view.setUint32(insert + 20, 0xffff_ffff, true)
+  view.setFloat32(insert + 48, 0.3, true)
+  const decoded = decodeSnapshot(data)
+  expect(tf2Audio(decoded)[0]).toMatchObject({ definition: "Default.ImpactHard", action: "play", fadeSeconds: 0,
+    source: { kind: "world", identity: 0, ownerIdentity: null, sourceClass: "worldspawn" },
+    overrides: { volume: Math.fround(0.3), channel: 6 }, samples: { wave: 2 } })
+  view.setFloat32(insert + 48, 1.01, true)
+  expect(() => decodeSnapshot(data)).toThrow("audio event record")
+  view.setFloat32(insert + 48, 0.3, true)
+  view.setUint32(insert + 16, 1, true)
+  expect(() => decodeSnapshot(data)).toThrow("audio event record")
+})
+
+test("deflection audio keeps projectile identity separate from the local player", () => {
+  const source = new Uint8Array(snapshot()), insert = 985
+  const data = new Uint8Array(source.length + 52), view = new DataView(data.buffer)
+  data.set(source.subarray(0, insert)); data.set(source.subarray(insert), insert + 52)
+  view.setUint32(132, 1, true); view.setBigUint64(insert, 7n, true)
+  data.set([2, 233, 5, 1, 0, 0], insert + 10)
+  view.setUint32(insert + 16, 1, true); view.setUint32(insert + 20, 1, true)
+  view.setFloat32(insert + 24, 128, true)
+  expect(tf2Audio(decodeSnapshot(data))[0]).toMatchObject({
+    definition: "Weapon_FlameThrower.AirBurstAttackDeflect", action: "play",
+    source: { kind: "entity", identity: 1, ownerIdentity: 1, sourceClass: "tf_projectile", origin: [128, 0, 0] },
+  })
+  data[insert + 12] = 1
+  expect(tf2Audio(decodeSnapshot(data))[0]!.source.sourceClass).toBe("tf_player")
+  data[insert + 12] = 6
+  expect(() => decodeSnapshot(data)).toThrow("audio event record")
+})
 
 test("mini-round completion is authoritative and does not change the round state or framing", () => {
   const bytes = snapshot(), data = new Uint8Array(bytes), at = Buffer.from(bytes).indexOf("PGRL")
@@ -341,7 +429,10 @@ test("flare radius damage preserves its native kind and rejects nonexplosive syr
   ;[1, 2, 3, 30, 110, 100].forEach((value, index) => view.setFloat32(at + 8 + index * 4, value, true))
   view.setUint32(at + 32, 0xffff_ffff, true)
   expect(decodeSnapshot(bytes).radiusDamageRequests).toEqual([{ projectile: 7, kind: 4, source: [1, 2, 3], baseDamage: 30, radius: 110, selfRadius: 100, directTarget: null }])
-  for (const kind of [0, 3, 5]) { bytes[at + 4] = kind; expect(() => decodeSnapshot(bytes)).toThrow("radius damage request record is invalid") }
+  bytes[at+4]=5
+  ;[1,2,3,60,146,146].forEach((value,index)=>view.setFloat32(at+8+index*4,value,true))
+  expect(decodeSnapshot(bytes).radiusDamageRequests).toEqual([{projectile:7,kind:5,source:[1,2,3],baseDamage:60,radius:146,selfRadius:146,directTarget:null}])
+  for (const kind of [0, 3, 6]) { bytes[at + 4] = kind; expect(() => decodeSnapshot(bytes)).toThrow("radius damage request record is invalid") }
 })
 
 test("studio occurrence revision bytes retain closed, moving, blocked, reversed and restored transforms", () => {
@@ -473,6 +564,26 @@ function snapshotPacket(firstTick: bigint, states: readonly Uint8Array[], previo
   for (const record of records) { bytes.set(record, at); at += record.length }
   return bytes.buffer
 }
+
+test("lossless publication deltas retain count/charge changes and malformed headers do not commit", () => {
+  const states = [1n, 2n].map((tick, index) => {
+    const data = rosterSnapshot(tick, 0, 0), view = new DataView(data.buffer)
+    data[16] = 4; data[18] = 3; data[276] = 3
+    view.setUint32(96, index === 0 ? 1 : 0, true)
+    view.setFloat32(320, index === 0 ? 0.5 : 0, true)
+    return data
+  })
+  const stream = new SimulationSnapshotStream()
+  const [publication] = stream.decode(snapshotPacket(1n, states))
+  expect(publication!.eventBatches.map(batch => [batch.snapshot.pipebombCount, batch.snapshot.chargeProgress])).toEqual([[1, 0.5], [0, 0]])
+  expect([publication!.snapshot.pipebombCount, publication!.snapshot.chargeProgress]).toEqual([0, 0])
+  expect(stream.metrics.deltaSnapshots).toBe(1)
+  const invalid = rosterSnapshot(3n, 0, 0)
+  new DataView(invalid.buffer).setUint32(96, 32, true)
+  expect(() => stream.decode(snapshotPacket(3n, [invalid], states[1]))).toThrow()
+  expect(stream.tick).toBe(2n)
+  stream.close()
+})
 
 class MemoryCache implements DerivedObjectCache {
   async read(): Promise<undefined> { return undefined }
@@ -657,11 +768,18 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     constrained.set(ordinary.subarray(blockerEnd), blockerEnd + 4)
     new DataView(constrained.buffer).setUint32(124, 3, true)
     expect(decodeSnapshot(constrained).authorityBlockers).toEqual([
-      { code: 1, classification: "Missing", detail: "TF2 sticky IVP solver unavailable: current body/contact transition" },
+      { code: 1, classification: "Missing", detail: "The map's complete rigid-body resources have not been admitted" },
       { code: 2, classification: "Missing", detail: "Tempus core and configured Jump course contract unavailable" },
       { code: 3, classification: "Missing", detail: "Payload cart visible model requires its authored breakable constraint and VPhysics rigid-body authority" },
     ])
     expect(decodeSnapshot(ordinary).authorityBlockers.map((blocker) => blocker.code)).toEqual([1, 2])
+    const ready=new Uint8Array(ordinary.byteLength-4)
+    ready.set(ordinary.subarray(0,blockerEnd-8))
+    ready.set(ordinary.subarray(blockerEnd-4),blockerEnd-8)
+    new DataView(ready.buffer).setUint32(124,1,true)
+    expect(decodeSnapshot(ready).authorityBlockers.map((blocker)=>blocker.code)).toEqual([2])
+    new DataView(ready.buffer).setUint32(96,32,true)
+    expect(()=>decodeSnapshot(ready)).toThrow("pipebomb count")
   })
 
   test("decodes every canonical class identity and a genuinely unarmed class snapshot", () => {
@@ -744,28 +862,18 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
       selectTeam: 3,
       modeRequest: 1,
       activateEntity: 213,
-      physicsResults: [{
-        projectile: 8,
-        tick: 7n,
-        position: [1, 2, 3],
-        velocity: [4, 5, 6],
-        orientation: [0, 0, 0, 1],
-        angularVelocity: [7, 8, 9],
-        motionEnabled: false,
-        contact: { kind: 1, normal: [0, 0, 1] },
-      }],
     })
     const commandView = new DataView(command)
     expect(new TextDecoder().decode(command.slice(0, 4))).toBe("PCMD")
-    expect(commandView.getUint32(4, true)).toBe(9)
-    expect(command.byteLength).toBe(164)
+    expect(commandView.getUint32(4, true)).toBe(10)
+    expect(command.byteLength).toBe(84)
     expect(commandView.getUint32(28, true)).toBe(0xff)
     expect(commandView.getUint32(32, true)).toBe(0x0203_0304)
     expect(commandView.getUint32(36, true)).toBe(213)
-    expect(commandView.getUint16(40, true)).toBe(1)
+    expect(commandView.getUint16(40, true)).toBe(0)
     expect(commandView.getUint16(42, true)).toBe(0)
     expect(commandView.getUint32(44, true)).toBe(0)
-    expect(commandView.getUint32(48, true)).toBe(164)
+    expect(commandView.getUint32(48, true)).toBe(84)
     expect(commandView.getUint32(52, true)).toBe(0)
     const stopped = encodeCommand({ forward: 0, side: 0, yawDegrees: 0, pitchDegrees: 0, jump: false, crouch: false, fire: false, detonate: false, nextbotStop: true })
     expect(new DataView(stopped).getUint32(28, true)).toBe(0)

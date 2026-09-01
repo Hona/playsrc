@@ -4,15 +4,15 @@ use crate::{
 };
 use playsrc_phy::{Asset as PhyAsset, Classification as PhyClassification};
 use std::{
-    collections::BTreeSet,
-    sync::{Arc, OnceLock},
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
 };
 
 #[cfg(test)]
 #[path = "snapshot_tests.rs"]
 mod tests;
 
-pub const SNAPSHOT_VERSION: u32 = 3;
+pub const SNAPSHOT_VERSION: u32 = 4;
 const DIST_EPSILON: f32 = 1.0 / 32.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -27,10 +27,6 @@ pub struct Transform {
     pub angles: [f32; 3],
 }
 impl Transform {
-    fn same_bits(self, other: Self) -> bool {
-        self.origin.map(f32::to_bits) == other.origin.map(f32::to_bits)
-            && self.angles.map(f32::to_bits) == other.angles.map(f32::to_bits)
-    }
     pub const IDENTITY: Self = Self {
         origin: [0.0; 3],
         angles: [0.0; 3],
@@ -134,6 +130,7 @@ impl Basis {
 pub struct SnapshotLimits {
     pub max_objects: usize,
     pub max_convexes: usize,
+    pub max_hierarchy_nodes: usize,
     pub max_vertices: usize,
     pub max_triangles: usize,
     pub max_axes_per_convex: usize,
@@ -146,6 +143,7 @@ impl Default for SnapshotLimits {
         Self {
             max_objects: 4_096,
             max_convexes: 65_536,
+            max_hierarchy_nodes: 65_536,
             max_vertices: 3_000_000,
             max_triangles: 1_000_000,
             max_axes_per_convex: 1_000_000,
@@ -160,6 +158,7 @@ impl SnapshotLimits {
         if [
             self.max_objects,
             self.max_convexes,
+            self.max_hierarchy_nodes,
             self.max_vertices,
             self.max_triangles,
             self.max_axes_per_convex,
@@ -176,6 +175,221 @@ impl SnapshotLimits {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthoredTriangle {
+    pub vertices: [u32; 3],
+    pub raw: [u8; 16],
+}
+
+impl AuthoredTriangle {
+    pub fn metadata(&self) -> u32 {
+        u32::from_le_bytes(
+            self.raw[..4]
+                .try_into()
+                .expect("authored triangle metadata"),
+        )
+    }
+
+    pub fn edge_words(&self) -> [u32; 3] {
+        std::array::from_fn(|edge| {
+            u32::from_le_bytes(
+                self.raw[4 + edge * 4..8 + edge * 4]
+                    .try_into()
+                    .expect("authored directed edge"),
+            )
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AuthoredConvex {
+    pub raw_header: [u8; 16],
+    pub points: Vec<[f32; 3]>,
+    pub triangles: Vec<AuthoredTriangle>,
+}
+impl AuthoredConvex {
+    fn header_matches_geometry(&self) -> bool {
+        let triangles =
+            i16::from_le_bytes(self.raw_header[12..14].try_into().expect("triangle count"));
+        let size = ((u32::from_le_bytes(self.raw_header[8..12].try_into().expect("geometry size"))
+            >> 8) as usize)
+            * 16;
+        triangles >= 0
+            && triangles as usize == self.triangles.len()
+            && 16 + self.triangles.len() * 16 <= size
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum AuthoredHullRef {
+    Piece(usize),
+    Enclosure(usize),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AuthoredHierarchyNode {
+    pub raw: [u8; 28],
+    pub children: Option<[usize; 2]>,
+    pub hull: Option<AuthoredHullRef>,
+}
+impl AuthoredHierarchyNode {
+    pub fn center(&self) -> [f32; 3] {
+        std::array::from_fn(|axis| {
+            f32::from_le_bytes(
+                self.raw[8 + axis * 4..12 + axis * 4]
+                    .try_into()
+                    .expect("node center"),
+            )
+        })
+    }
+    pub fn radius(&self) -> f32 {
+        f32::from_le_bytes(self.raw[20..24].try_into().expect("node radius"))
+    }
+    pub fn box_sizes(&self) -> [u8; 3] {
+        self.raw[24..27].try_into().expect("node bound sizes")
+    }
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct AuthoredEnclosure {
+    pub geometry: AuthoredConvex,
+    pub subtree: Option<usize>,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct AuthoredHierarchy {
+    /// Node zero is the root; child order is authored left, right.
+    pub nodes: Vec<AuthoredHierarchyNode>,
+    pub enclosures: Vec<AuthoredEnclosure>,
+}
+impl AuthoredHierarchy {
+    fn validate(&self, shape: &PhysicsShape, limits: SnapshotLimits) -> Result<(), Error> {
+        if self.nodes.is_empty()
+            || self.nodes.len() > limits.max_hierarchy_nodes
+            || shape
+                .convexes
+                .len()
+                .checked_add(self.enclosures.len())
+                .is_none_or(|count| count > limits.max_convexes)
+        {
+            return Err(error(ErrorCode::Limit, None));
+        }
+        let mut vertices = shape.vertex_count;
+        let mut triangles = shape.triangle_count;
+        for (index, enclosure) in self.enclosures.iter().enumerate() {
+            vertices = vertices
+                .checked_add(enclosure.geometry.points.len())
+                .ok_or_else(|| error(ErrorCode::Limit, Some(index)))?;
+            triangles = triangles
+                .checked_add(enclosure.geometry.triangles.len())
+                .ok_or_else(|| error(ErrorCode::Limit, Some(index)))?;
+            if vertices > limits.max_vertices || triangles > limits.max_triangles {
+                return Err(error(ErrorCode::Limit, Some(index)));
+            }
+            if !enclosure.geometry.header_matches_geometry()
+                || enclosure.geometry.points.len() < 4
+                || enclosure.geometry.triangles.len() < 4
+                || enclosure
+                    .geometry
+                    .points
+                    .iter()
+                    .flatten()
+                    .any(|value| !value.is_finite())
+                || enclosure.geometry.triangles.iter().any(|triangle| {
+                    triangle
+                        .vertices
+                        .iter()
+                        .any(|vertex| *vertex as usize >= enclosure.geometry.points.len())
+                })
+            {
+                return Err(error(ErrorCode::InvalidSnapshot, Some(index)));
+            }
+            let flags = u32::from_le_bytes(
+                enclosure.geometry.raw_header[8..12]
+                    .try_into()
+                    .expect("hull flags"),
+            );
+            if (flags & 3 != 0) != enclosure.subtree.is_some()
+                || enclosure
+                    .subtree
+                    .is_some_and(|node| node >= self.nodes.len())
+            {
+                return Err(error(ErrorCode::InvalidReference, Some(index)));
+            }
+        }
+        let mut pieces = BTreeSet::new();
+        let mut enclosures = BTreeSet::new();
+        let mut states = vec![0_u8; self.nodes.len()];
+        let mut pending = vec![(0_usize, false)];
+        while let Some((index, exit)) = pending.pop() {
+            let node = self
+                .nodes
+                .get(index)
+                .ok_or_else(|| error(ErrorCode::InvalidReference, Some(index)))?;
+            if exit {
+                states[index] = 2;
+                continue;
+            }
+            if states[index] == 1 {
+                return Err(error(ErrorCode::InvalidSnapshot, Some(index)));
+            }
+            if states[index] == 2 {
+                continue;
+            }
+            states[index] = 1;
+            pending.push((index, true));
+            if node.center().iter().any(|value| !value.is_finite())
+                || !node.radius().is_finite()
+                || node.radius() < 0.0
+                || (i32::from_le_bytes(node.raw[..4].try_into().expect("right child")) != 0)
+                    != node.children.is_some()
+                || (i32::from_le_bytes(node.raw[4..8].try_into().expect("hull offset")) != 0)
+                    != node.hull.is_some()
+            {
+                return Err(error(ErrorCode::InvalidSnapshot, Some(index)));
+            }
+            if let Some(hull) = node.hull {
+                match hull {
+                    AuthoredHullRef::Piece(piece) => {
+                        if piece >= shape.convexes.len() {
+                            return Err(error(ErrorCode::InvalidReference, Some(index)));
+                        }
+                        if node.children.is_none() {
+                            pieces.insert(piece);
+                        }
+                    }
+                    AuthoredHullRef::Enclosure(enclosure) => {
+                        if enclosure >= self.enclosures.len() {
+                            return Err(error(ErrorCode::InvalidReference, Some(index)));
+                        }
+                        enclosures.insert(enclosure);
+                    }
+                }
+            }
+            if let Some([left, right]) = node.children {
+                pending.push((left, false));
+                pending.push((right, false));
+            } else if !matches!(node.hull, Some(AuthoredHullRef::Piece(_))) {
+                return Err(error(ErrorCode::InvalidSnapshot, Some(index)));
+            }
+        }
+        if states.contains(&0)
+            || pieces.len() != shape.convexes.len()
+            || enclosures.len() != self.enclosures.len()
+        {
+            return Err(error(ErrorCode::InvalidReference, None));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AuthoredShapeProperties {
+    pub center: [f32; 3],
+    pub inertia: [f32; 3],
+    pub radius: f32,
+    pub max_surface_deviation: u8,
+    pub drag_axes: Option<[f32; 3]>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConvexInput {
     pub solid: usize,
@@ -183,6 +397,7 @@ pub struct ConvexInput {
     pub contents: u32,
     pub vertices: Vec<[f32; 3]>,
     pub triangles: Vec<[u32; 3]>,
+    pub authored: Option<AuthoredConvex>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -193,6 +408,8 @@ pub struct PhysicsShape {
     contents: u32,
     vertex_count: usize,
     triangle_count: usize,
+    authored_properties: Option<AuthoredShapeProperties>,
+    authored_hierarchy: Option<AuthoredHierarchy>,
 }
 impl PhysicsShape {
     pub fn compile(
@@ -223,6 +440,25 @@ impl PhysicsShape {
                     .iter()
                     .flatten()
                     .any(|value| !value.is_finite())
+                || input.authored.as_ref().is_some_and(|authored| {
+                    !authored.header_matches_geometry()
+                        || u32::from_le_bytes(
+                            authored.raw_header[8..12].try_into().expect("convex flags"),
+                        ) & 3
+                            != 0
+                        || authored.points.len() != input.vertices.len()
+                        || authored.triangles.len() != input.triangles.len()
+                        || authored
+                            .points
+                            .iter()
+                            .flatten()
+                            .any(|value| !value.is_finite())
+                        || authored
+                            .triangles
+                            .iter()
+                            .zip(&input.triangles)
+                            .any(|(authored, indexes)| authored.vertices != *indexes)
+                })
             {
                 return Err(error(ErrorCode::InvalidSnapshot, Some(item)));
             }
@@ -276,6 +512,7 @@ impl PhysicsShape {
                 convex: input.convex,
                 contents: input.contents,
                 vertices: input.vertices,
+                authored: input.authored,
                 faces,
                 edges,
             });
@@ -285,9 +522,9 @@ impl PhysicsShape {
             maxs: [f32::NEG_INFINITY; 3],
         };
         for vertex in convexes.iter().flat_map(|convex| &convex.vertices) {
-            for axis in 0..3 {
-                bounds.mins[axis] = bounds.mins[axis].min(vertex[axis]);
-                bounds.maxs[axis] = bounds.maxs[axis].max(vertex[axis]);
+            for (axis, coordinate) in vertex.iter().enumerate() {
+                bounds.mins[axis] = bounds.mins[axis].min(*coordinate);
+                bounds.maxs[axis] = bounds.maxs[axis].max(*coordinate);
             }
         }
         let contents = convexes
@@ -300,6 +537,8 @@ impl PhysicsShape {
             contents,
             vertex_count,
             triangle_count,
+            authored_properties: None,
+            authored_hierarchy: None,
         })
     }
 
@@ -310,6 +549,7 @@ impl PhysicsShape {
         limits: SnapshotLimits,
         mut contents_for_game_data: impl FnMut(i32) -> u32,
     ) -> Result<Self, Error> {
+        let limits = limits.validate()?;
         let source = asset
             .solids
             .get(solid)
@@ -317,27 +557,158 @@ impl PhysicsShape {
         if source.classification != PhyClassification::Handled {
             return Err(error(ErrorCode::Unsupported, Some(solid)));
         }
+        let source_tree = source
+            .hierarchy
+            .as_ref()
+            .ok_or_else(|| error(ErrorCode::InvalidReference, Some(solid)))?;
+        if source.geometries.len() > limits.max_convexes
+            || source_tree.nodes.len() > limits.max_hierarchy_nodes
+        {
+            return Err(error(ErrorCode::Limit, Some(solid)));
+        }
+        let mut vertices = 0_usize;
+        let mut triangles = 0_usize;
+        for geometry in &source.geometries {
+            vertices = vertices
+                .checked_add(geometry.points.len())
+                .ok_or_else(|| error(ErrorCode::Limit, Some(solid)))?;
+            triangles = triangles
+                .checked_add(geometry.triangles.len())
+                .ok_or_else(|| error(ErrorCode::Limit, Some(solid)))?;
+            if vertices > limits.max_vertices || triangles > limits.max_triangles {
+                return Err(error(ErrorCode::Limit, Some(solid)));
+            }
+        }
+        let authored = |value: &playsrc_phy::ConvexGeometry| AuthoredConvex {
+            raw_header: value.raw_header,
+            points: value
+                .points
+                .iter()
+                .map(|point| point.source_bits.map(|axis| f32::from_bits(axis.0)))
+                .collect(),
+            triangles: value
+                .triangles
+                .iter()
+                .map(|triangle| AuthoredTriangle {
+                    vertices: triangle.point_indices,
+                    raw: triangle.raw,
+                })
+                .collect(),
+        };
+        let mut references = BTreeMap::new();
         let inputs = source
             .convexes
             .iter()
             .enumerate()
-            .map(|(convex, value)| ConvexInput {
-                solid,
-                convex,
-                contents: contents_for_game_data(value.client_data),
-                vertices: value
-                    .points
-                    .iter()
-                    .map(|point| point.source_inches.map(|axis| f32::from_bits(axis.0)))
-                    .collect(),
-                triangles: value
-                    .triangles
-                    .iter()
-                    .map(|triangle| triangle.point_indices)
-                    .collect(),
+            .map(|(convex, value)| {
+                let geometry = source
+                    .geometries
+                    .get(value.geometry)
+                    .ok_or_else(|| error(ErrorCode::InvalidReference, Some(convex)))?;
+                if references
+                    .insert(value.geometry, AuthoredHullRef::Piece(convex))
+                    .is_some()
+                {
+                    return Err(error(ErrorCode::InvalidReference, Some(convex)));
+                }
+                Ok(ConvexInput {
+                    solid,
+                    convex,
+                    contents: contents_for_game_data(value.client_data),
+                    vertices: geometry
+                        .points
+                        .iter()
+                        .map(|point| point.source_inches.map(|axis| f32::from_bits(axis.0)))
+                        .collect(),
+                    triangles: geometry
+                        .triangles
+                        .iter()
+                        .map(|triangle| triangle.point_indices)
+                        .collect(),
+                    authored: Some(authored(geometry)),
+                })
             })
-            .collect();
-        Self::compile(identity, inputs, limits)
+            .collect::<Result<Vec<_>, Error>>()?;
+        let mut hierarchy = AuthoredHierarchy {
+            nodes: Vec::new(),
+            enclosures: Vec::new(),
+        };
+        for (index, geometry) in source.geometries.iter().enumerate() {
+            if references.contains_key(&index) {
+                continue;
+            }
+            references.insert(
+                index,
+                AuthoredHullRef::Enclosure(hierarchy.enclosures.len()),
+            );
+            hierarchy.enclosures.push(AuthoredEnclosure {
+                geometry: authored(geometry),
+                subtree: geometry.subtree,
+            });
+        }
+        hierarchy.nodes = source_tree
+            .nodes
+            .iter()
+            .map(|node| {
+                Ok(AuthoredHierarchyNode {
+                    raw: node.raw,
+                    children: node.children,
+                    hull: node
+                        .hull
+                        .map(|index| {
+                            references
+                                .get(&index)
+                                .copied()
+                                .ok_or_else(|| error(ErrorCode::InvalidReference, Some(solid)))
+                        })
+                        .transpose()?,
+                })
+            })
+            .collect::<Result<_, Error>>()?;
+        Self::compile_authored(
+            identity,
+            inputs,
+            AuthoredShapeProperties {
+                center: source
+                    .center_bits
+                    .map(|component| f32::from_bits(component.0)),
+                inertia: source
+                    .inertia_bits
+                    .map(|component| f32::from_bits(component.0)),
+                radius: f32::from_bits(source.radius_bits.0),
+                max_surface_deviation: source.max_surface_deviation,
+                drag_axes: source
+                    .drag_axis_bits
+                    .map(|axes| axes.map(|component| f32::from_bits(component.0))),
+            },
+            hierarchy,
+            limits,
+        )
+    }
+
+    pub fn compile_authored(
+        identity: u64,
+        inputs: Vec<ConvexInput>,
+        properties: AuthoredShapeProperties,
+        hierarchy: AuthoredHierarchy,
+        limits: SnapshotLimits,
+    ) -> Result<Self, Error> {
+        if properties
+            .center
+            .iter()
+            .chain(properties.inertia.iter())
+            .chain(properties.drag_axes.iter().flatten())
+            .any(|component| !component.is_finite())
+            || !properties.radius.is_finite()
+            || inputs.iter().any(|input| input.authored.is_none())
+        {
+            return Err(error(ErrorCode::InvalidSnapshot, None));
+        }
+        let mut shape = Self::compile(identity, inputs, limits)?;
+        hierarchy.validate(&shape, limits)?;
+        shape.authored_properties = Some(properties);
+        shape.authored_hierarchy = Some(hierarchy);
+        Ok(shape)
     }
 
     fn contents(&self) -> u32 {
@@ -350,6 +721,36 @@ impl PhysicsShape {
 
     pub fn convex_count(&self) -> usize {
         self.convexes.len()
+    }
+
+    pub fn convex_contents(&self, convex: usize) -> Option<u32> {
+        self.convexes.get(convex).map(|convex| convex.contents)
+    }
+
+    pub fn authored_convex(&self, convex: usize) -> Option<&AuthoredConvex> {
+        self.convexes.get(convex)?.authored.as_ref()
+    }
+
+    pub fn authored_properties(&self) -> Option<AuthoredShapeProperties> {
+        self.authored_properties
+    }
+
+    pub fn authored_hierarchy(&self) -> Option<&AuthoredHierarchy> {
+        self.authored_hierarchy.as_ref()
+    }
+
+    pub fn authored_hull(&self, reference: AuthoredHullRef) -> Option<&AuthoredConvex> {
+        match reference {
+            AuthoredHullRef::Piece(index) => self.authored_convex(index),
+            AuthoredHullRef::Enclosure(index) => Some(
+                &self
+                    .authored_hierarchy
+                    .as_ref()?
+                    .enclosures
+                    .get(index)?
+                    .geometry,
+            ),
+        }
     }
 
     pub fn local_bounds(&self) -> Hull {
@@ -369,16 +770,61 @@ struct Convex {
     convex: usize,
     contents: u32,
     vertices: Vec<[f32; 3]>,
+    authored: Option<AuthoredConvex>,
     faces: Vec<Face>,
     edges: Vec<[f32; 3]>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+pub trait PhysicsQuery: std::fmt::Debug + Send + Sync {
+    fn geometry(&self) -> &PhysicsShape;
+    fn bounds(&self, transform: Transform) -> Result<Hull, Error>;
+    fn trace(&self, request: ObjectTraceRequest) -> Result<(crate::BoundsTrace, Option<usize>), Error>;
+    fn storage_bytes(&self) -> usize;
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct FixturePhysicsQuery {
+    pub geometry: Arc<PhysicsShape>,
+    pub calls: std::sync::atomic::AtomicUsize,
+}
+
+#[cfg(test)]
+impl PhysicsQuery for FixturePhysicsQuery {
+    fn geometry(&self) -> &PhysicsShape { &self.geometry }
+    fn bounds(&self, transform: Transform) -> Result<Hull, Error> {
+        Ok(transformed_bounds(self.geometry.local_bounds(), transform.basis()?))
+    }
+    fn trace(&self, request: ObjectTraceRequest) -> Result<(crate::BoundsTrace, Option<usize>), Error> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut trace = crate::trace_bounds(request.start, request.end, request.hull, self.bounds(request.transform)?)?;
+        let hit = trace.fraction < 1.0 || trace.start_solid || trace.all_solid;
+        trace.contents = if hit { self.geometry.contents() } else { 0 };
+        Ok((trace, hit.then_some(0)))
+    }
+    fn storage_bytes(&self) -> usize { 0 }
+}
+
+#[derive(Clone, Debug)]
 pub enum SnapshotShape {
     BrushModel { model: usize },
     BoundingBox { bounds: Hull },
     OrientedBox { bounds: Hull },
-    Physics(Arc<PhysicsShape>),
+    Physics(Arc<dyn PhysicsQuery>),
+    Follower { parent: u64, query: Arc<dyn PhysicsQuery> },
+}
+
+impl PartialEq for SnapshotShape {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::BrushModel { model: a }, Self::BrushModel { model: b }) => a == b,
+            (Self::BoundingBox { bounds: a }, Self::BoundingBox { bounds: b })
+            | (Self::OrientedBox { bounds: a }, Self::OrientedBox { bounds: b }) => a == b,
+            (Self::Physics(a), Self::Physics(b)) => Arc::ptr_eq(a, b) || a.geometry() == b.geometry(),
+            (Self::Follower { parent: a, query: left }, Self::Follower { parent: b, query: right }) => a == b && (Arc::ptr_eq(left, right) || left.geometry() == right.geometry()),
+            _ => false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -410,7 +856,6 @@ pub struct SnapshotRecord {
     pub surface_flags: u16,
     pub shape: SnapshotShape,
     pub bounds: Hull,
-    prepared: Arc<[PreparedConvexCache]>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -500,7 +945,7 @@ impl Snapshot {
         inputs: Vec<ObjectInput>,
         limits: SnapshotLimits,
     ) -> Result<Self, Error> {
-        Self::compile_inner(world, identity, inputs, limits, None)
+        Self::compile_inner(world, identity, inputs, limits)
     }
 
     pub fn recompile(
@@ -512,7 +957,7 @@ impl Snapshot {
         if self.world != world.identity {
             return Err(error(ErrorCode::InvalidSnapshot, None));
         }
-        Self::compile_inner(world, identity, inputs, self.limits, Some(self))
+        Self::compile_inner(world, identity, inputs, self.limits)
     }
 
     fn compile_inner(
@@ -520,7 +965,6 @@ impl Snapshot {
         identity: u64,
         inputs: Vec<ObjectInput>,
         limits: SnapshotLimits,
-        previous: Option<&Self>,
     ) -> Result<Self, Error> {
         let limits = limits.validate()?;
         if inputs.len() > limits.max_objects {
@@ -531,11 +975,6 @@ impl Snapshot {
         let mut convex_count = 0_usize;
         let mut vertex_count = 0_usize;
         let mut triangle_count = 0_usize;
-        let retained = previous
-            .into_iter()
-            .flat_map(|snapshot| snapshot.objects.iter())
-            .map(|record| (record.identity, record))
-            .collect::<std::collections::BTreeMap<_, _>>();
         for (item, input) in inputs.into_iter().enumerate() {
             if !identities.insert(input.identity) {
                 return Err(error(ErrorCode::DuplicateIdentity, Some(item)));
@@ -589,8 +1028,8 @@ impl Snapshot {
                     validate_hull(*bounds, item)?;
                     (input.contents, *bounds)
                 }
-                SnapshotShape::Physics(shape) => {
-                    let counts = shape.counts();
+                SnapshotShape::Physics(shape) | SnapshotShape::Follower { query: shape, .. } => {
+                    let counts = shape.geometry().counts();
                     convex_count = convex_count
                         .checked_add(counts.0)
                         .ok_or_else(|| error(ErrorCode::Limit, Some(item)))?;
@@ -606,30 +1045,15 @@ impl Snapshot {
                     {
                         return Err(error(ErrorCode::Limit, Some(item)));
                     }
-                    (shape.contents(), shape.local_bounds())
+                    (shape.geometry().contents(), shape.geometry().local_bounds())
                 }
             };
-            let bounds = transformed_bounds(local_bounds, basis);
-            let prepared = if let Some(record) = retained.get(&input.identity).filter(|record| {
-                record.transform.same_bits(input.transform)
-                    && match (&record.shape, &input.shape) {
-                        (SnapshotShape::Physics(left), SnapshotShape::Physics(right)) => {
-                            Arc::ptr_eq(left, right)
-                        }
-                        _ => false,
-                    }
-            }) {
-                Arc::clone(&record.prepared)
-            } else {
-                match &input.shape {
-                    SnapshotShape::Physics(shape) => shape
-                        .convexes
-                        .iter()
-                        .map(|_| PreparedConvexCache::default())
-                        .collect::<Vec<_>>()
-                        .into(),
-                    _ => Arc::from([]),
+            let bounds = match &input.shape {
+                SnapshotShape::Physics(shape) | SnapshotShape::Follower { query: shape, .. } => {
+                    let bounds = shape.bounds(input.transform)?;
+                    Hull { mins: bounds.mins.map(|value| value - DIST_EPSILON), maxs: bounds.maxs.map(|value| value + DIST_EPSILON) }
                 }
+                _ => transformed_bounds(local_bounds, basis),
             };
             objects.push(SnapshotRecord {
                 identity: input.identity,
@@ -644,7 +1068,6 @@ impl Snapshot {
                 surface_flags: input.surface_flags,
                 shape: input.shape,
                 bounds,
-                prepared,
             });
         }
         let mut broadphase = Vec::new();
@@ -683,6 +1106,15 @@ impl Snapshot {
 
     pub fn records(&self) -> &[SnapshotRecord] {
         &self.objects
+    }
+
+    /// Shared immutable physical-query storage, excluding geometry and allocator overhead.
+    pub fn physics_query_storage_bytes(&self) -> usize {
+        let mut seen = BTreeSet::new();
+        self.objects.iter().filter_map(|object| {
+            let query = match &object.shape { SnapshotShape::Physics(query) | SnapshotShape::Follower { query, .. } => query, _ => return None };
+            seen.insert(Arc::as_ptr(query) as *const () as usize).then(|| query.storage_bytes())
+        }).sum()
     }
 
     pub fn object_transform(&self, identity: u64) -> Option<Transform> {
@@ -737,11 +1169,17 @@ impl Snapshot {
                 }
                 SnapshotShape::Physics(shape) => {
                     output.u8(3)?;
-                    output.u64(shape.identity)?;
+                    output.u64(shape.geometry().identity)?;
                     output.u32(
-                        u32::try_from(shape.convexes.len())
+                        u32::try_from(shape.geometry().convexes.len())
                             .map_err(|_| error(ErrorCode::Limit, None))?,
                     )?;
+                }
+                SnapshotShape::Follower { parent, query } => {
+                    output.u8(4)?;
+                    output.u64(*parent)?;
+                    output.u64(query.geometry().identity)?;
+                    output.u32(u32::try_from(query.geometry().convex_count()).map_err(|_| error(ErrorCode::Limit, None))?)?;
                 }
             }
         }
@@ -1177,6 +1615,7 @@ impl World {
                 || request.scope == TraceScope::EntitiesOnly
                     && object.role == ObjectRole::StaticProp
                 || request.ignored.contains(&object.identity)
+                || matches!(&object.shape, SnapshotShape::Follower { parent, .. } if request.ignored.contains(parent))
                 || object.contents & request.mask == 0
             {
                 continue;
@@ -1297,14 +1736,20 @@ impl World {
                 self.trace_model_hull(*model, request, object.identity, object.role)?
             }
             SnapshotShape::BoundingBox { bounds } => {
-                let mut trace = trace_box(
+                let result = crate::trace_bounds(
                     request.start,
                     request.end,
                     request.hull,
-                    add(request.transform.origin, bounds.mins),
-                    add(request.transform.origin, bounds.maxs),
-                    object.contents,
+                    Hull {mins:add(request.transform.origin, bounds.mins),maxs:add(request.transform.origin, bounds.maxs)},
                 )?;
+                let mut trace=miss(result.start,result.end);
+                trace.fraction=result.fraction;
+                trace.fraction_left_solid=result.fraction_left_solid;
+                trace.start_solid=result.start_solid;
+                trace.all_solid=result.all_solid;
+                trace.contents=if result.contents==0 {0}else{object.contents};
+                trace.plane=result.plane;
+                if trace.did_hit() {trace.hit=Some(Hit::Object {identity:object.identity,role:object.role,feature:Feature::Box});}
                 set_box_feature(&mut trace);
                 trace
             }
@@ -1350,79 +1795,20 @@ impl World {
                     trace
                 }
             }
-            SnapshotShape::Physics(shape) => {
-                let basis = request.transform.basis()?;
-                let mut output = miss(request.start, request.end);
-                for (index, convex) in shape.convexes.iter().enumerate() {
-                    if convex.contents & request.mask == 0 {
-                        continue;
-                    }
-                    let query = || {
-                        let temporary;
-                        let prepared = if request.transform.same_bits(object.transform) {
-                            object.prepared[index].0.get_or_init(|| {
-                                PreparedConvex::compile(
-                                    &convex.vertices,
-                                    &convex.faces,
-                                    &convex.edges,
-                                    basis,
-                                )
-                            })
-                        } else {
-                            temporary = PreparedConvex::compile(
-                                &convex.vertices,
-                                &convex.faces,
-                                &convex.edges,
-                                basis,
-                            );
-                            &temporary
-                        };
-                        prepared.trace(
-                            request.start,
-                            request.end,
-                            request.hull,
-                            convex.contents,
-                            limits,
-                        )
-                    };
-                    #[cfg(feature = "replay-reference")]
-                    let mut candidate = if crate::replay_diagnostics::reference() {
-                        crate::replay_diagnostics::count(3, 1);
-                        trace_convex(
-                            request.start,
-                            request.end,
-                            request.hull,
-                            &convex.vertices,
-                            &convex.faces,
-                            &convex.edges,
-                            basis,
-                            convex.contents,
-                            limits,
-                        )
-                    } else {
-                        query()
-                    }?;
-                    #[cfg(not(feature = "replay-reference"))]
-                    let mut candidate = query()?;
-                    if candidate.hit.is_some() || candidate.start_solid || candidate.all_solid {
-                        let triangle = candidate.hit.and_then(|hit| match hit {
-                            Hit::Object {
-                                feature: Feature::Convex { triangle, .. },
-                                ..
-                            } => triangle,
-                            _ => None,
-                        });
-                        candidate.hit = Some(Hit::Object {
-                            identity: object.identity,
-                            role: object.role,
-                            feature: Feature::Convex {
-                                solid: convex.solid,
-                                convex: convex.convex,
-                                triangle,
-                            },
-                        });
-                    }
-                    merge(&mut output, candidate);
+            SnapshotShape::Physics(shape) | SnapshotShape::Follower { query: shape, .. } => {
+                let request = if matches!(object.shape, SnapshotShape::Follower { .. }) { ObjectTraceRequest { mask: u32::MAX, ..request } } else { request };
+                let (result, selected) = shape.trace(request)?;
+                let mut output = miss(result.start, result.end);
+                output.fraction = result.fraction;
+                output.fraction_left_solid = result.fraction_left_solid;
+                output.start_solid = result.start_solid;
+                output.all_solid = result.all_solid;
+                output.contents = result.contents;
+                output.plane = result.plane;
+                if output.did_hit() {
+                    let convex = selected.and_then(|index| shape.geometry().convexes.get(index)).ok_or_else(|| error(ErrorCode::InvalidReference, selected))?;
+                    output.hit = Some(Hit::Object { identity: object.identity, role: object.role,
+                        feature: Feature::Convex { solid: convex.solid, convex: convex.convex, triangle: None } });
                 }
                 output
             }
@@ -1436,7 +1822,7 @@ impl World {
                 _ => Feature::Box,
             };
             trace.hit = Some(Hit::Object {
-                identity: object.identity,
+                identity: match &object.shape { SnapshotShape::Follower { parent, .. } => *parent, _ => object.identity },
                 role: object.role,
                 feature,
             });
@@ -1488,189 +1874,6 @@ fn trace_box(
         contents,
         point_hull(hull),
     )
-}
-
-// World-space support intervals belong to an immutable object transform, not
-// to a movement query. Keep the original arithmetic and first-feature order;
-// in particular, do not merge approximately parallel planes.
-#[derive(Default, Debug)]
-struct PreparedConvexCache(OnceLock<PreparedConvex>);
-// Cache population is not authoritative snapshot state. Shapes and transforms
-// are compared by SnapshotRecord; untouched map solids need no retained planes.
-impl PartialEq for PreparedConvexCache {
-    fn eq(&self, _: &Self) -> bool {
-        true
-    }
-}
-
-#[derive(Debug)]
-struct PreparedDirection {
-    normal: [f32; 3],
-    support: OnceLock<(f32, f32)>,
-    triangle: Option<usize>,
-}
-
-#[derive(Debug)]
-struct PreparedConvex {
-    vertices: Vec<[f32; 3]>,
-    directions: Vec<PreparedDirection>,
-    face_count: usize,
-    source_face_count: usize,
-    source_direction_count: usize,
-    axial_bounds: Hull,
-}
-
-impl PreparedConvex {
-    fn compile(
-        local_vertices: &[[f32; 3]],
-        faces: &[Face],
-        edges: &[[f32; 3]],
-        basis: Basis,
-    ) -> Self {
-        let vertices = local_vertices
-            .iter()
-            .copied()
-            .map(|vertex| basis.point(vertex))
-            .collect::<Vec<_>>();
-        // These are the same three axial support directions already required
-        // by the swept-box SAT, not an approximation to the physics solid.
-        let axial_bounds = Hull {
-            mins: std::array::from_fn(|axis| {
-                let mut normal = [0.0; 3];
-                normal[axis] = 1.0;
-                vertices
-                    .iter()
-                    .map(|&vertex| dot(vertex, normal))
-                    .fold(f32::INFINITY, f32::min)
-            }),
-            maxs: std::array::from_fn(|axis| {
-                let mut normal = [0.0; 3];
-                normal[axis] = 1.0;
-                vertices
-                    .iter()
-                    .map(|&vertex| dot(vertex, normal))
-                    .fold(f32::NEG_INFINITY, f32::max)
-            }),
-        };
-        #[cfg(feature = "replay-reference")]
-        crate::replay_diagnostics::count(5, vertices.len() * 6);
-        let mut directions = Vec::new();
-        let mut seen = BTreeSet::new();
-        let mut append = |direction, triangle| {
-            let length = length(direction);
-            if length <= f32::EPSILON {
-                return directions.len();
-            }
-            let normal = scale(direction, 1.0 / length);
-            if !seen.insert(normal.map(f32::to_bits)) {
-                return directions.len();
-            }
-            directions.push(PreparedDirection {
-                normal,
-                support: OnceLock::new(),
-                triangle,
-            });
-            directions.len()
-        };
-        let mut face_count = 0;
-        for face in faces {
-            face_count = append(basis.vector(face.normal), Some(face.triangle));
-        }
-        // The face prefix is the complete point-ray query. Hull-only directions
-        // must never enter that prefix, including for sub-millimetre extents.
-        for direction in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
-            append(direction, None);
-        }
-        for edge in edges.iter().copied().map(|edge| basis.vector(edge)) {
-            for axis in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
-                append(cross(edge, axis), None);
-            }
-        }
-        Self {
-            vertices,
-            directions,
-            face_count,
-            source_face_count: faces.len(),
-            source_direction_count: faces.len() + 3 + edges.len() * 3,
-            axial_bounds,
-        }
-    }
-
-    fn trace(
-        &self,
-        start: [f32; 3],
-        end: [f32; 3],
-        hull: Hull,
-        contents: u32,
-        limits: SnapshotLimits,
-    ) -> Result<Trace, Error> {
-        validate_hull(hull, 0)?;
-        let point = point_hull(hull);
-        if (if point {
-            self.source_face_count
-        } else {
-            self.source_direction_count
-        }) > limits.max_axes_per_convex
-        {
-            return Err(error(ErrorCode::Limit, None));
-        }
-        let center = scale(add(hull.mins, hull.maxs), 0.5);
-        let extents = scale(sub(hull.maxs, hull.mins), 0.5);
-        let ray_start = add(start, center);
-        let ray_end = add(end, center);
-        if !point {
-            for axis in 0..3 {
-                let mut normal = [0.0; 3];
-                normal[axis] = 1.0;
-                let radius = dot_abs(normal, extents);
-                let upper = self.axial_bounds.maxs[axis] + radius;
-                let lower = -(self.axial_bounds.mins[axis] - radius);
-                // Strictly outside both endpoints is the original clipper's
-                // exact rejection. Do not use this extra axis for point rays.
-                if dot(ray_start, normal) - upper > 0.0 && dot(ray_end, normal) - upper > 0.0
-                    || dot(ray_start, scale(normal, -1.0)) - lower > 0.0
-                        && dot(ray_end, scale(normal, -1.0)) - lower > 0.0
-                {
-                    return Ok(miss(start, end));
-                }
-            }
-        }
-        #[cfg(feature = "replay-reference")]
-        crate::replay_diagnostics::count(3, 1);
-        let directions = if point {
-            &self.directions[..self.face_count]
-        } else {
-            &self.directions
-        };
-        let axes = directions.iter().flat_map(|direction| {
-            let radius = dot_abs(direction.normal, extents);
-            // Preserve lazy support traversal from the direct clipper. A cold
-            // miss must not prepare unused edge supports, either. Subsequent
-            // queries share only the exact intervals actually visited.
-            let &(minimum, maximum) = direction.support.get_or_init(|| {
-                #[cfg(feature = "replay-reference")]
-                crate::replay_diagnostics::count(5, self.vertices.len());
-                self.vertices.iter().copied().fold(
-                    (f32::INFINITY, f32::NEG_INFINITY),
-                    |(minimum, maximum), vertex| {
-                        let projection = dot(vertex, direction.normal);
-                        (minimum.min(projection), maximum.max(projection))
-                    },
-                )
-            });
-            [
-                IntervalAxis::new(
-                    scale(direction.normal, -1.0),
-                    -(minimum - radius),
-                    direction.triangle,
-                ),
-                IntervalAxis::new(direction.normal, maximum + radius, direction.triangle),
-            ]
-        });
-        let mut trace = clip_axes(start, end, ray_start, ray_end, axes, contents, point)?;
-        set_convex_feature(&mut trace);
-        Ok(trace)
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1765,7 +1968,7 @@ fn trace_convex(
     #[cfg(test)]
     assert_eq!(
         eager,
-        Ok(trace.clone()),
+        Ok(trace),
         "lazy support projection must preserve the full eager trace"
     );
     set_convex_feature(&mut trace);
@@ -1800,72 +2003,6 @@ struct IntervalAxis {
     triangle: Option<usize>,
 }
 
-#[cfg(test)]
-mod lazy_support_tests {
-    use super::*;
-
-    #[test]
-    fn separated_queries_do_not_project_unused_support_axes() {
-        let visited = std::cell::Cell::new(0);
-        let axes = [
-            IntervalAxis::new([1.0, 0.0, 0.0], 1.0, None),
-            IntervalAxis::new([0.0, 1.0, 0.0], 1.0, None),
-        ]
-        .into_iter()
-        .inspect(|_| visited.set(visited.get() + 1));
-        let trace = clip_axes([3.0; 3], [4.0; 3], [3.0; 3], [4.0; 3], axes, 1, false).unwrap();
-        assert_eq!(trace.fraction, 1.0);
-        assert_eq!(visited.get(), 1);
-    }
-
-    #[test]
-    fn lazy_and_eager_queries_match_for_rotations_extents_inside_and_sweeps() {
-        let vertices = box_vertices(Hull {
-            mins: [-8.0, -16.0, -4.0],
-            maxs: [8.0, 16.0, 4.0],
-        });
-        for yaw in [0.0, 15.0, 90.0, 180.0, 273.0] {
-            let basis = Transform {
-                origin: [11.0, -7.0, 3.0],
-                angles: [21.0, yaw, -13.0],
-            }
-            .basis()
-            .unwrap();
-            for hull in [
-                Hull {
-                    mins: [0.0; 3],
-                    maxs: [0.0; 3],
-                },
-                Hull {
-                    mins: [-24.0, -24.0, 0.0],
-                    maxs: [24.0, 24.0, 82.0],
-                },
-            ] {
-                for x in -8..=8 {
-                    for y in -8..=8 {
-                        let start = [x as f32 * 8.0, y as f32 * 8.0, 3.0];
-                        for end in [start, [0.0; 3], [-start[0], -start[1], -8.0]] {
-                            // Each test-build trace compares every returned field
-                            // against eager support projection before returning.
-                            trace_convex(
-                                start,
-                                end,
-                                hull,
-                                &vertices,
-                                &box_faces(),
-                                &box_edges(),
-                                basis,
-                                1,
-                                SnapshotLimits::default(),
-                            )
-                            .unwrap();
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 impl IntervalAxis {
     const fn new(normal: [f32; 3], distance: f32, triangle: Option<usize>) -> Self {
         Self {
@@ -2212,5 +2349,72 @@ impl BoundedBytes {
 
     fn finish(self) -> Vec<u8> {
         self.bytes
+    }
+}
+
+#[cfg(test)]
+mod lazy_support_tests {
+    use super::*;
+
+    #[test]
+    fn separated_queries_do_not_project_unused_support_axes() {
+        let visited = std::cell::Cell::new(0);
+        let axes = [
+            IntervalAxis::new([1.0, 0.0, 0.0], 1.0, None),
+            IntervalAxis::new([0.0, 1.0, 0.0], 1.0, None),
+        ]
+        .into_iter()
+        .inspect(|_| visited.set(visited.get() + 1));
+        let trace = clip_axes([3.0; 3], [4.0; 3], [3.0; 3], [4.0; 3], axes, 1, false).unwrap();
+        assert_eq!(trace.fraction, 1.0);
+        assert_eq!(visited.get(), 1);
+    }
+
+    #[test]
+    fn lazy_and_eager_queries_match_for_rotations_extents_inside_and_sweeps() {
+        let vertices = box_vertices(Hull {
+            mins: [-8.0, -16.0, -4.0],
+            maxs: [8.0, 16.0, 4.0],
+        });
+        for yaw in [0.0, 15.0, 90.0, 180.0, 273.0] {
+            let basis = Transform {
+                origin: [11.0, -7.0, 3.0],
+                angles: [21.0, yaw, -13.0],
+            }
+            .basis()
+            .unwrap();
+            for hull in [
+                Hull {
+                    mins: [0.0; 3],
+                    maxs: [0.0; 3],
+                },
+                Hull {
+                    mins: [-24.0, -24.0, 0.0],
+                    maxs: [24.0, 24.0, 82.0],
+                },
+            ] {
+                for x in -8..=8 {
+                    for y in -8..=8 {
+                        let start = [x as f32 * 8.0, y as f32 * 8.0, 3.0];
+                        for end in [start, [0.0; 3], [-start[0], -start[1], -8.0]] {
+                            // Each test-build trace compares every returned field
+                            // against eager support projection before returning.
+                            trace_convex(
+                                start,
+                                end,
+                                hull,
+                                &vertices,
+                                &box_faces(),
+                                &box_edges(),
+                                basis,
+                                1,
+                                SnapshotLimits::default(),
+                            )
+                            .unwrap();
+                        }
+                    }
+                }
+            }
+        }
     }
 }

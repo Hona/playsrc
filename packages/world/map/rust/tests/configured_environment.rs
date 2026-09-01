@@ -106,6 +106,7 @@ fn configured_environment_retains_collision_selected_marks_water_and_view_inputs
     assert_eq!(hex(&Sha256::digest(&bsp_bytes)), BSP_SHA256);
     let bundle_bytes = playsrc_asset_graph::read_resource_set(
         &cache.join("browser-bundles/jump_beef.graph.json"),
+        &cache.join("browser-bundles/jump_beef.graph/objects"),
         Some("gameplay"),
     )
     .unwrap();

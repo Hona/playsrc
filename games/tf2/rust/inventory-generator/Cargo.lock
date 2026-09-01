@@ -414,6 +414,17 @@ version = "0.1.0"
 [[package]]
 name = "playsrc-phy"
 version = "0.1.0"
+dependencies = [
+ "playsrc-keyvalues",
+]
+
+[[package]]
+name = "playsrc-physics"
+version = "0.1.0"
+dependencies = [
+ "playsrc-collision",
+ "playsrc-material",
+]
 
 [[package]]
 name = "playsrc-studio-model"
@@ -434,6 +445,8 @@ dependencies = [
  "playsrc-material",
  "playsrc-movement",
  "playsrc-nav",
+ "playsrc-phy",
+ "playsrc-physics",
  "playsrc-studio-model",
  "playsrc-vmt",
 ]

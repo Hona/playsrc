@@ -9,6 +9,8 @@ pub const GAME_FILES: &[&str] = &[
 
 pub const GAME_SYSTEMS: &[&str] = &[
     "rockettrail", "rocketbackblast", "stickybombtrail_red", "stickybombtrail_blue",
+    "pipebombtrail_red", "pipebombtrail_blue", "critical_pipe_red", "critical_pipe_blue",
+    "critical_grenade_red", "critical_grenade_blue", "muzzle_grenadelauncher",
     "stickybomb_pulse_red", "stickybomb_pulse_blue", "muzzle_pipelauncher", "muzzle_scattergun",
     "muzzle_pistol", "muzzle_shotgun", "blood_impact_red_01", "water_blood_impact_red_01",
     "blood_spray_red_01", "blood_spray_red_01_far", "bullet_scattergun_tracer01_red",

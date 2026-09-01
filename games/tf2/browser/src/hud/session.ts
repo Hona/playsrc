@@ -52,6 +52,8 @@ type CompactGameplayEvent = Readonly<{
 }>
 
 type SessionSnapshot = Readonly<{
+  pipebombCount: number
+  chargeProgress: number | null
   weaponCrosshairScale: number
   decapitations: number
   revengeCrits: number

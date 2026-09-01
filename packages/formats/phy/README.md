@@ -23,6 +23,7 @@ Parse Source 1 PHY resources into runtime-neutral collision asset data.
 - Represent collision geometry and physical properties without runtime-engine assumptions.
 - Preserve unsupported records explicitly.
 - Decode modern and legacy compact polygon partitions into Source-space convex points and triangles while retaining every exact solid body and triangle record.
+- Retain authored hierarchy nodes and convex headers, including enclosing hulls and subtree links. Terminal `convexes` reference the shared `geometries` array; enclosing hulls do not become extra collision pieces.
 - Preserve exact NUL-terminated keydata bytes and expose ordered nested block/scalar views without applying physics defaults.
 
 ## Non-Responsibilities

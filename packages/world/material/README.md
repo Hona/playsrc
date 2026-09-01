@@ -36,7 +36,7 @@ Resolve Source material documents and textures into runtime-neutral material beh
 - Evaluate all 17 configured model proxy identities in VMT order. Generic texture/time/copy/multiply/compare/select operations use material variables; TF2 burn, invulnerability, tint, glow, yellow-level, invisibility, sheen, and weapon-skin operations consume only typed game-owned inputs.
 - Bind each model texture role to caller-supplied VTF metadata, Source wrap/min/mag/mip filtering plus selected anisotropy level, and the complete authored `(mip, frame, face, slice)` plane sequence. Missing authored planes fail; generated mips are not an output.
 - Resolve current model opacity, effective self-illumination/base-alpha ownership, alpha-test/blend/depth state, and potential/current framebuffer use from exact VTF alpha facts plus explicit current material alpha and cloak values; enumerate ambient cube, local lights, camera, Studio eye, environment, framebuffer, authored-plane, and game-proxy requirements without supplying fallback inputs.
-- Build one manifest-ordered surface-property registry with stable file-closure identity and first-index/later-override semantics; retain independent `$surfaceprop`/`$surfaceprop2` names and resolve unknown authored names to the exact `default` record.
+- Build one manifest-ordered surface-property registry with stable file-closure identity, first-index/later-override semantics, ordered `base`/default inheritance, the runtime-created reserved shadow entry, exact game-material bytes, Source-normalized bullet-impact names, and binary32 friction, elasticity, density, thickness, and dampening; retain independent `$surfaceprop`/`$surfaceprop2` names and resolve unknown authored names to the exact `default` record.
 
 ## Configured Evidence
 

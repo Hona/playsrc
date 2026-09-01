@@ -59,7 +59,35 @@ pub struct CombatPlayerFacts {
     pub backstab_immune: bool,
 }
 
+pub(crate) fn rigid_brush_class(class: &[u8]) -> bool {
+    [b"func_button".as_slice(), b"func_door", b"func_movelinear", b"func_brush", b"func_tracktrain"]
+        .iter().any(|name| class.eq_ignore_ascii_case(name))
+}
+
 pub trait GameplayWorld: Tracer {
+    fn trace_world(&self, start: [f32; 3], end: [f32; 3], hull: Hull, mask: u32) -> Result<playsrc_movement::Trace, MoveError> {
+        let trace = self.trace(start, end, hull, mask)?;
+        if trace.hit.is_some_and(|identity| !self.is_world(identity)) {
+            return Err(MoveError::new(playsrc_movement::Operation::Trace, playsrc_movement::FailureKind::Missing, "world-only collision binding"));
+        }
+        Ok(trace)
+    }
+    fn trace_brush(&self, _model: usize, _request: playsrc_collision::ObjectTraceRequest) -> Result<playsrc_movement::Trace, MoveError> {
+        Err(MoveError::new(playsrc_movement::Operation::Trace, playsrc_movement::FailureKind::Missing, "brush collision binding"))
+    }
+    fn trace_static(&self, _identity: u64, _start: [f32; 3], _end: [f32; 3], _hull: Hull, _mask: u32) -> Result<playsrc_movement::Trace, MoveError> {
+        Err(MoveError::new(playsrc_movement::Operation::Trace, playsrc_movement::FailureKind::Missing, "static collision binding"))
+    }
+    fn static_query_bounds(&self) -> Result<Vec<(u64, Hull)>, MoveError> {
+        Err(MoveError::new(playsrc_movement::Operation::Trace, playsrc_movement::FailureKind::Missing, "static entity query bounds"))
+    }
+    fn actor_query_state(&self, _identity: u32, _origin: [f32; 3], _solid: bool) -> Result<(), MoveError> { Ok(()) }
+    fn trace_projectile_solid(&self,_start:[f32;3],_end:[f32;3],_mask:u32)->Result<ProjectileSolidTrace,MoveError> {
+        Err(MoveError::new(playsrc_movement::Operation::Trace,playsrc_movement::FailureKind::Missing,"projectile solid ray trace"))
+    }
+    fn trace_grenade_entities(&self,_start:[f32;3],_end:[f32;3],_thrower:u32,_hitboxes:&[crate::PosedPlayerHitbox])->Result<Option<GrenadeEntityHit>,MoveError> {
+        Err(MoveError::new(playsrc_movement::Operation::Trace,playsrc_movement::FailureKind::Missing,"grenade entity-only ray trace"))
+    }
     /// Host monotonic work clock for NextBot's frame budget. Deterministic
     /// fixture worlds report zero work; runtime adapters supply real elapsed time.
     fn bot_update_milliseconds(&self)->f64{0.0}
@@ -90,6 +118,43 @@ pub trait GameplayWorld: Tracer {
         self.overlaps_model_hull(model,transform.origin,position,hull)
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum QueryChange {
+    State { source: u32, handle: EntityHandle, state: playsrc_entity::EntityCollisionState },
+    Remove(EntityHandle),
+}
+
+#[derive(Clone,Copy,Debug,PartialEq)]
+pub struct GrenadeEntityHit {
+    pub identity:u32,
+    pub team:crate::PlayerTeam,
+    pub fraction:f32,
+    pub start_solid:bool,
+    pub normal:[f32;3],
+    pub end:[f32;3],
+    pub combat_item:bool,
+}
+
+#[derive(Clone,Copy,Debug,PartialEq)]
+pub struct ProjectileSolidTrace {
+    pub fraction:f32,
+    pub start_solid:bool,
+    pub all_solid:bool,
+    pub end:[f32;3],
+    pub normal:[f32;3],
+    pub hit:Option<u64>,
+    pub player_hit:bool,
+    pub sky:bool,
+}
+impl From<playsrc_collision::Trace> for ProjectileSolidTrace {
+    fn from(trace:playsrc_collision::Trace)->Self {
+        Self {fraction:trace.fraction,start_solid:trace.start_solid,all_solid:trace.all_solid,end:trace.end,normal:trace.plane.map_or([0.0;3],|p|p.normal),hit:trace.hit.map(|hit|match hit {playsrc_collision::Hit::Object {identity,..}=>identity,_=>0}),player_hit:false,sky:trace.is_sky()}
+    }
+}
+
+// COLLISION_GROUP_NONE against in-vehicle, vehicle-clip, door-blocker and TF respawn-room groups.
+pub fn projectile_solid_group(group:i32)->bool { !matches!(group,10|12|14|25) }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MapCounts {
@@ -435,9 +500,43 @@ pub struct MapRuntime {
     tick_interval: f32,
     next_producer_sequence: u64,
     last_player_position: [f32; 3],
+    query_changes: Vec<QueryChange>,
 }
 
 impl MapRuntime {
+    pub(crate) fn take_query_changes(&mut self) -> Vec<QueryChange> { std::mem::take(&mut self.query_changes) }
+
+    pub(crate) fn brush_query_data(&self, handle: EntityHandle) -> Result<Option<(usize, Hull)>, RuntimeFailure> {
+        let Some(entity) = self.world.entity(handle) else { return Ok(None); };
+        if !rigid_brush_class(&entity.classname) { return Ok(None); }
+        let Some(model) = entity.definition.bsp_model_index else { return Ok(None); };
+        let bounds = self.world.model_bounds(model).ok_or_else(|| invalid(entity.source_index))?;
+        Ok(Some((model, Hull { mins: bounds.mins.map(|value| value - 1.0), maxs: bounds.maxs.map(|value| value + 1.0) })))
+    }
+
+    pub(crate) fn initial_brush_queries(&self) -> Result<Vec<QueryChange>, RuntimeFailure> {
+        let mut output = Vec::new();
+        for (&source, &handle) in &self.source_handles {
+            if self.brush_query_data(handle)?.is_some() {
+                let state = self.world.collision_state(handle).ok_or_else(|| invalid(source as usize))?;
+                output.push(QueryChange::State { source, handle, state });
+            }
+        }
+        Ok(output)
+    }
+
+    pub(crate) fn query_source(&self, handle: EntityHandle) -> Option<u32> {
+        self.source_handles.iter().find_map(|(source, current)| (*current == handle).then_some(*source))
+    }
+
+    pub(crate) fn radius_damageable(&self, handle: EntityHandle) -> bool {
+        self.world.entity(handle).is_some_and(|entity| match &entity.behavior {
+            BehaviorState::Mover(mover) => mover.damage_activates,
+            BehaviorState::DynamicProp(_) => true,
+            BehaviorState::Breakable(breakable) => !breakable.broken && breakable.can_break,
+            _ => false,
+        })
+    }
     pub(crate) fn is_brush_model(&self, source: u32) -> bool {
         self.source_handles.get(&source).and_then(|handle| self.world.entity(*handle)).is_some_and(|entity| entity.render.brush_model.is_some())
     }
@@ -1011,6 +1110,7 @@ impl MapRuntime {
             tick_interval,
             next_producer_sequence: 1,
             last_player_position: [0.0; 3],
+            query_changes: Vec::new(),
         })
     }
 
@@ -1777,15 +1877,16 @@ impl MapRuntime {
         self.consume(batch).map_err(MapError::from)
     }
 
-    pub fn damage(&mut self, tick: u64, source: u32) -> Result<MapPhase, MapError> {
+    pub fn damage(&mut self, tick: u64, source: u32, attacker: u32) -> Result<MapPhase, MapError> {
         let handle = self
             .source_handle(source)
             .ok_or(MapError::MissingEntity(source))?;
+        let attacker = if attacker == 0 { None } else { Some(self.actor_handle(tick, attacker)?) };
         let batch = self.world.phase(
             tick,
             &[WorldCommand::Damage {
                 entity: handle,
-                attacker: Some(self.player),
+                attacker,
             }],
         )?;
         self.consume(batch).map_err(MapError::from)
@@ -2160,6 +2261,26 @@ impl MapRuntime {
     pub fn entity_world_transform(&self, identity: u32) -> Option<Transform> {
         self.world.entity(*self.source_handles.get(&identity)?).map(|entity| entity.world_transform)
     }
+    pub(crate) fn rigid_entities(&self)->impl Iterator<Item=(u32,&playsrc_entity::Entity,Transform,bool,bool)> {
+        self.source_handles.iter().filter_map(|(source,handle)| {let entity=self.world.entity(*handle)?;let collision=self.collision_entity(*source)?;Some((*source,entity.definition.as_ref(),entity.world_transform,collision.enabled,entity.parent.is_some()))})
+    }
+    pub(crate) fn rigid_animation(&self,source:u32)->Option<(usize,f32,f32)> {
+        let animation=self.prop_animations.get(self.source_handles.get(&source)?)?;
+        Some((animation.sequence,animation.cycle,animation.last_think))
+    }
+    pub(crate) fn sticky_adhesion_prop(&self,identity:u32)->bool {
+        let Some(entity)=self.source_handles.get(&identity).and_then(|handle|self.world.entity(*handle)) else {return false;};
+        let Some(name)=entity.definition.classname.as_deref() else {return false;};
+        let dynamic=[b"prop_dynamic".as_slice(),b"dynamic_prop",b"prop_dynamic_override",b"training_prop_dynamic"].iter().any(|candidate|name.eq_ignore_ascii_case(candidate));
+        if !dynamic {return false;}
+        let parent=field(&entity.definition,b"parentname").unwrap_or_default();
+        if parent==b"sawmovelinear01" || parent==b"sawmovelinear02" {return false;}
+        !self.grenade_sensitive_prop(identity)
+    }
+    pub(crate) fn grenade_sensitive_prop(&self,identity:u32)->bool {
+        let Some(entity)=self.source_handles.get(&identity).and_then(|handle|self.world.entity(*handle)) else {return false;};
+        entity.definition.classname.as_deref().is_some_and(|name|name.eq_ignore_ascii_case(b"training_prop_dynamic")) && integer(&entity.definition,b"spawnflags",0)&512!=0
+    }
 
     pub fn entity_descends_from(&self, identity: u32, ancestor: u32) -> bool {
         let Some(handle) = self.source_handles.get(&identity) else { return false; };
@@ -2178,6 +2299,19 @@ impl MapRuntime {
         }
         let mut output = MapPhase::default();
         for record in batch.records {
+            let changed = match &record.transition {
+                Transition::TransformChanged { entity, .. } | Transition::Lifecycle { entity, .. } => Some(*entity),
+                Transition::Input { target, accepted: true, .. } => Some(*target),
+                _ => None,
+            };
+            if let Some(handle) = changed.filter(|handle| *handle != self.player && !self.actor_handles.values().any(|actor| actor == handle)) {
+                if let Some(entity) = self.world.entity(handle) {
+                    if let (Ok(source), Some(mut state)) = (u32::try_from(entity.source_index), self.world.collision_state(handle)) {
+                        if let Transition::TransformChanged { world, .. } = &record.transition { state.transform = *world; }
+                        self.query_changes.push(QueryChange::State { source, handle, state });
+                    }
+                } else { self.query_changes.push(QueryChange::Remove(handle)); }
+            }
             match record.transition {
                 Transition::PathTrackPassed {node} => {
                     let mut events=Vec::new();
@@ -2872,6 +3006,42 @@ mod tests {
         ) -> Result<bool, MoveError> {
             Ok(true)
         }
+    }
+
+    #[test]
+    fn damage_activation_uses_the_attacking_actor_not_the_local_player() {
+        let graph = playsrc_entity::parse(br#"{"classname" "func_button" "model" "*1" "health" "1"}"#, Default::default()).unwrap();
+        let mut map = MapRuntime::compile(&graph, 0.015, 1, vec![ModelBounds { model: 1, mins: [-8.0; 3], maxs: [8.0; 3] }]).unwrap();
+        map.damage(1, 0, 42).unwrap();
+        let handle = map.source_handle(0).unwrap();
+        let BehaviorState::Mover(mover) = &map.world.entity(handle).unwrap().behavior else { panic!("button"); };
+        assert_eq!(mover.activator, map.actor_handles.get(&42).copied());
+        assert_ne!(mover.activator, Some(map.player));
+    }
+
+    #[test]
+    fn query_journal_preserves_transform_order_solidity_and_removed_generation() {
+        let graph = playsrc_entity::parse(br#"{"classname" "worldspawn"} {"classname" "func_brush" "model" "*1"}"#, Default::default()).unwrap();
+        let mut map = MapRuntime::compile(&graph, 0.015, 1, vec![ModelBounds { model: 1, mins: [-8.0; 3], maxs: [8.0; 3] }]).unwrap();
+        map.take_query_changes();
+        let handle = map.source_handle(1).unwrap();
+        map.input(1, 1, b"Disable", Variant::Void).unwrap();
+        assert!(matches!(map.take_query_changes().as_slice(), [QueryChange::State { source: 1, handle: actual, state }] if *actual == handle && !state.enabled));
+        let first = Transform { origin: [10.0, 0.0, 0.0], angles: [0.0; 3] };
+        let second = Transform { origin: [20.0, 0.0, 0.0], angles: [0.0; 3] };
+        let batch = map.world.phase(2, &[
+            WorldCommand::SetWorldTransform { entity: handle, transform: first },
+            WorldCommand::SetWorldTransform { entity: map.player, transform: first },
+            WorldCommand::SetWorldTransform { entity: handle, transform: second },
+        ]).unwrap();
+        map.consume(batch).unwrap();
+        assert_eq!(map.take_query_changes(), [first, second].map(|transform| QueryChange::State {
+            source: 1, handle, state: playsrc_entity::EntityCollisionState { transform, enabled: false },
+        }));
+        let batch = map.world.phase(3, &[WorldCommand::Remove(handle)]).unwrap();
+        map.consume(batch).unwrap();
+        assert_eq!(map.take_query_changes(), [QueryChange::Remove(handle)]);
+        assert!(map.take_query_changes().is_empty());
     }
 
     #[test]

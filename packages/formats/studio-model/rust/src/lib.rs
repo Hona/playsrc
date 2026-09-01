@@ -311,6 +311,17 @@ pub fn read_model_surface_property(identity: &str, bytes: &[u8], limits: Limits)
     if offset == 0 { Ok(Vec::new()) } else { relative_string(bytes, 0, offset, limits, identity) }
 }
 
+pub fn read_model_keydata<'a>(identity:&str,bytes:&'a [u8],limits:Limits)->Result<&'a [u8],Error> {
+    let profile=Profile::from_version(i32_at(bytes,4,identity)?).ok_or_else(||failure(Classification::Unsupported,ErrorCode::ProfileMismatch,identity,Some(4..8)))?;
+    let bytes=mdl_header_bytes(identity,profile,bytes,limits)?;
+    let size=i32_at(bytes,316,identity)?;
+    if size==0 {return Ok(&[]);}
+    let offset=i32_at(bytes,312,identity)?;
+    let invalid=||failure(Classification::Malformed,ErrorCode::InvalidRange,identity,Some(312..320));
+    let start=usize::try_from(offset).map_err(|_|invalid())?;let length=usize::try_from(size).map_err(|_|invalid())?;
+    bytes.get(start..start.checked_add(length).ok_or_else(invalid)?).ok_or_else(invalid)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Bone {
     pub index: usize,
@@ -4262,6 +4273,24 @@ mod tests {
         assert_eq!(read_model_surface_property("fixture", &bytes, Limits::default()).unwrap(), b"metal");
         bytes[76..80].copy_from_slice(&offset.to_le_bytes());
         assert!(read_model_surface_property("fixture", &bytes, Limits::default()).is_err());
+    }
+
+    #[test]
+    fn model_keydata_borrows_exact_declared_payload_and_rejects_bad_ranges() {
+        let mut bytes=mdl(48,false);
+        assert!(read_model_keydata("fixture",&bytes,Limits::default()).unwrap().is_empty());
+        let start=bytes.len();let payload=b"bone_followers { bone \"root\" }\0";
+        bytes.extend_from_slice(payload);
+        let length=bytes.len() as i32;
+        bytes[76..80].copy_from_slice(&length.to_le_bytes());
+        bytes[312..316].copy_from_slice(&(start as i32).to_le_bytes());
+        bytes[316..320].copy_from_slice(&(payload.len() as i32).to_le_bytes());
+        let actual=read_model_keydata("fixture",&bytes,Limits::default()).unwrap();
+        assert_eq!(actual,payload);assert_eq!(actual.as_ptr(),bytes[start..].as_ptr());
+        bytes[316..320].copy_from_slice(&(-1_i32).to_le_bytes());
+        assert_eq!(read_model_keydata("fixture",&bytes,Limits::default()).unwrap_err().code,ErrorCode::InvalidRange);
+        bytes[316..320].copy_from_slice(&(payload.len() as i32+1).to_le_bytes());
+        assert_eq!(read_model_keydata("fixture",&bytes,Limits::default()).unwrap_err().code,ErrorCode::InvalidRange);
     }
 
     fn mdl(version: i32, body_part: bool) -> Vec<u8> {

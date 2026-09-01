@@ -1156,6 +1156,7 @@ mod tests {
             identity: identity.to_owned(),
             checksum: 0,
             flags,
+            collision_bounds: [vector([0.0; 3]); 2],
             basis: ModelBasis {
                 forward: vector([1.0, 0.0, 0.0]),
                 left: vector([0.0, 1.0, 0.0]),

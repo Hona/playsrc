@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { parseSourceBundleCache, parseSourceBundleReport } from "../src/source-bundle"
+import { parseSourceBundleCache, parseSourceBundleReport,sourceBundleExecutable } from "../src/source-bundle"
+import path from "node:path"
 import { TF2_CONTENT_BUILD } from "@playsrc/game-tf2-browser/content-build"
 import { MAX_GRAPH_CHUNKS } from "@playsrc/asset-store/graph"
 
@@ -34,6 +35,16 @@ const valid = {
 }
 
 describe("source dependency bundle report", () => {
+  test("uses Cargo's actual executable instead of assuming the shared target directory",()=>{
+    const filename=process.platform==="win32"?"playsrc-source-bundle.exe":"playsrc-source-bundle"
+    const executable=path.resolve("owned-target/source-bundle",filename)
+    const artifact={reason:"compiler-artifact",target:{name:"playsrc-source-bundle",kind:["bin"]},executable}
+    const records=[{reason:"compiler-artifact",target:{name:"dependency",kind:["lib"]},executable:null},artifact,{reason:"build-finished",success:true}]
+    expect(sourceBundleExecutable(records.map(value=>JSON.stringify(value)).join("\n"),filename)).toBe(executable)
+    expect(()=>sourceBundleExecutable("",filename)).toThrow("exactly one")
+    expect(()=>sourceBundleExecutable([artifact,artifact].map(value=>JSON.stringify(value)).join("\n"),filename)).toThrow("exactly one")
+    expect(()=>sourceBundleExecutable(JSON.stringify({...artifact,executable:executable+".wasm"}),filename)).toThrow("native")
+  })
   test("keeps Process-sized region reports within the shared graph admission bound", () => {
     const report = { ...valid, target: "cp_process_final", requests: 4104, entries: 4055, graphEntries: 4313, graphChunks: 1033 }
     expect(parseSourceBundleReport(JSON.stringify(report), report.target).graphChunks).toBe(1033)

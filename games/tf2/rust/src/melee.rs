@@ -93,10 +93,10 @@ pub fn damage(base: f32, health: i32, maximum: i32, mut attribute: impl FnMut(&s
     damage
 }
 
-pub fn impact_force(weapon: Weapon, amount: f32, direction: [f32; 3]) -> [f32; 3] {
-    if amount.abs() < 1.0 { return [0.0; 3]; }
-    let scale = if weapon == Weapon::Shovel { 1.0 } else { 80.0 };
-    crate::scale(crate::normalized(direction), (amount * (75.0 * 4.0)) * (1.0 / amount * scale))
+pub fn impact_force(amount: f32, direction: [f32; 3], scale: f32) -> Result<[f32; 3], playsrc_physics::SourceVectorError> {
+    if amount.abs() < 1.0 { return Ok([0.0; 3]); }
+    let direction = playsrc_physics::normalize_source_vector(direction)?;
+    Ok(crate::scale(crate::scale(direction, amount * (75.0 * 4.0)), 1.0 / amount * scale))
 }
 
 pub fn player_push(size: [f32; 3], amount: f32, self_damage: bool) -> f32 {
@@ -115,40 +115,50 @@ impl<W: crate::GameplayWorld + Clone> crate::Session<W> {
             hull, health: self.health, maximum_health: self.maximum_health() })
     }
 
-    pub(crate) fn melee_player_trace(&self, owner: u32, start: [f32; 3], end: [f32; 3], hull: playsrc_collision::Hull, maximum: f32) -> Option<(u32, f32, [f32; 3])> {
-        let mut hit = self.bots.as_ref().and_then(|bots| bots.melee_trace(owner, start, end, hull, maximum));
-        if owner != crate::PLAYER_IDENTITY && let Some(actor) = self.melee_actor(crate::PLAYER_IDENTITY) {
-            let mins = std::array::from_fn(|axis| actor.position[axis] + actor.hull.mins[axis] - hull.maxs[axis]);
-            let maxs = std::array::from_fn(|axis| actor.position[axis] + actor.hull.maxs[axis] - hull.mins[axis]);
-            if let Some(fraction) = crate::ray_box_fraction(start, end, mins, maxs)
-                && fraction <= hit.map_or(maximum, |(_, fraction, _)| fraction) {
-                hit = Some((crate::PLAYER_IDENTITY, fraction, crate::add(start, crate::scale(crate::sub(end, start), fraction))));
+    pub(crate) fn trace_melee_scene(&mut self, owner: u32, start: [f32; 3], end: [f32; 3], hull: playsrc_collision::Hull, ignore_players: bool)
+        -> Result<(playsrc_movement::Trace, Option<crate::hitscan::DamageTarget>), crate::Error> {
+        use crate::entity_queries::Entity;
+        self.sync_bot_queries()?;
+        self.flush_entity_queries()?;
+        let world = self.collision.trace_world(start, end, hull, crate::MASK_SOLID)?;
+        if world.start_solid { return Ok((world, None)); }
+        let mut selected = None;
+        let mut impact = playsrc_movement::Trace { fraction: 1.0, start_solid: false, all_solid: false, end: world.end, normal: None, hit: None, contents: 0 };
+        for entity in self.entity_queries.sweep(start, world.end, hull, 1, usize::MAX, |entity|
+            entity != Entity::Actor(owner) && (!ignore_players || !matches!(entity, Entity::Actor(_)))).map_err(crate::Error::ProjectileTrace)? {
+            if let Entity::Projectile(identity) = entity {
+                let projectile = self.projectiles.iter().find(|projectile| projectile.presentation.identity == identity).ok_or(crate::Error::InvalidProjectilePhysics)?;
+                if !projectile.presentation.kind.uses_rigid_physics() && projectile.presentation.owner_identity == owner { continue; }
             }
+            let (candidate, target) = self.trace_query_entity(entity, start, world.end, hull, crate::MASK_SOLID)?;
+            if candidate.all_solid || candidate.start_solid || candidate.fraction < impact.fraction {
+                let start_solid = impact.start_solid || candidate.start_solid;
+                impact = candidate;
+                impact.start_solid = start_solid;
+                selected = target;
+            }
+            if impact.all_solid { break; }
         }
-        hit
+        if impact.hit.is_none() && !impact.start_solid && !impact.all_solid { return Ok((world, None)); }
+        impact.fraction *= world.fraction;
+        impact.end = crate::add(start, crate::scale(crate::sub(end, start), impact.fraction));
+        Ok((impact, selected))
     }
 
-    pub(crate) fn melee_hull_intersection(&self, owner: u32, origin: [f32; 3], mut impact: playsrc_movement::Trace) -> Result<(playsrc_movement::Trace, Option<(u32, f32, [f32; 3])>), crate::Error> {
+    pub(crate) fn melee_hull_intersection(&mut self, owner: u32, origin: [f32; 3], mut impact: playsrc_movement::Trace, mut selected: Option<crate::hitscan::DamageTarget>) -> Result<(playsrc_movement::Trace, Option<crate::hitscan::DamageTarget>), crate::Error> {
         let end = crate::add(origin, crate::scale(crate::sub(impact.end, origin), 2.0));
         let hull = playsrc_collision::Hull { mins: [0.0; 3], maxs: [0.0; 3] };
-        let trace = |end| -> Result<_, crate::Error> {
-            let mut hit = self.collision.trace(origin, end, hull, crate::MASK_SOLID)?;
-            let actor = self.melee_player_trace(owner, origin, end, hull, hit.fraction);
-            if let Some((identity, fraction, position)) = actor { hit.fraction = fraction; hit.end = position; hit.hit = Some(u64::from(identity)); }
-            Ok((hit, actor))
-        };
-        let (center, actor) = trace(end)?;
-        if center.fraction < 1.0 { return Ok((center, actor)); }
+        let (center, target) = self.trace_melee_scene(owner, origin, end, hull, false)?;
+        if center.fraction < 1.0 { return Ok((center, target)); }
         let mut nearest = 1_000_000.0;
-        let mut selected_actor = None;
         for x in [-24.0, 24.0] { for y in [-24.0, 24.0] { for z in [0.0, 62.0] {
-            let (candidate, actor) = trace(crate::add(end, [x, y, z]))?;
+            let (candidate, target) = self.trace_melee_scene(owner, origin, crate::add(end, [x, y, z]), hull, false)?;
             if candidate.fraction < 1.0 {
                 let distance = crate::length(crate::sub(candidate.end, origin));
-                if distance < nearest { nearest = distance; impact = candidate; selected_actor = actor; }
+                if distance < nearest { nearest = distance; impact = candidate; selected = target; }
             }
         } } }
-        Ok((impact, selected_actor))
+        Ok((impact, selected))
     }
 
     pub(crate) fn advance_bleeding(&mut self, events: &mut Vec<crate::Event>) -> Result<(), crate::Error> {

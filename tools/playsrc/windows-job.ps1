@@ -8,7 +8,7 @@ param(
   [switch]$FreshBrowser,
   [string]$ProfileArguments = '[]',
   [string]$Target,
-  [ValidateSet('wasm','producer','resources')][string]$Stage,
+  [ValidateSet('wasm','producer','browser','resources')][string]$Stage,
   [string]$Task,
   [switch]$IncludeTrace,
   [string]$JobArguments = '[]',
@@ -228,7 +228,7 @@ if ($JobArguments -ne '[]') {
   if ($Profile -notmatch '^[a-z0-9-]+$') { throw 'Expected a normal profile name' }
   if ($Grep.Length -gt 512 -or $Grep.Contains([char]0)) {throw 'Profile selection exceeds its bound'}
 } elseif ($Action -eq 'BuildStage') {
-  if (!$Stage -or ($Stage -eq 'resources' -and $Target -notmatch '^[a-z0-9_]+$') -or ($Stage -ne 'resources' -and $Target)) { throw 'Expected wasm | producer | resources with a local build target' }
+  if (!$Stage -or ($Stage -eq 'resources' -and $Target -notmatch '^[a-z0-9_]+$') -or ($Stage -ne 'resources' -and $Target)) { throw 'Expected wasm | producer | browser | resources with a local build target' }
 } elseif ($Action -eq 'Build' -and $Target -notmatch '^[a-z0-9_]+$') { throw 'Expected a local build target' }
 $token = [Guid]::NewGuid().ToString()
 $name = "playsrc-local-job-$token"

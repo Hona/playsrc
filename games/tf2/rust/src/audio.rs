@@ -48,6 +48,7 @@ mod native_tests {
         let mut codes = std::collections::BTreeSet::new();
         for definition in SoundDefinition::NATIVE {
             assert!(codes.insert(definition.code()));
+            assert!(!(160..224).contains(&definition.code()));
             assert_eq!(SoundDefinition::from_code(definition.code()), Some(*definition));
             assert!((1..=16).contains(&definition.wave_count()));
         }
@@ -119,8 +120,24 @@ impl SoundDefinition {
             .or_else(|| CONFIGURED_SOUNDS.iter().position(|(candidate, _, _)| *candidate == name).map(|index| Self::Configured(index as u8)))
     }
 
+    pub(crate) fn physical_impact_volume(self) -> Option<f32> {
+        match self {
+            Self::DefaultImpactHard | Self::DefaultImpactSoft => Some(0.6),
+            Self::GrenadeImpactHard | Self::GrenadeImpactSoft => Some(1.0),
+            Self::SolidMetalImpactHard => Some(0.4),
+            Self::SolidMetalImpactSoft => Some(0.6),
+            Self::FleshImpactHard => Some(0.8),
+            Self::FleshImpactSoft => Some(0.6),
+            _ => None,
+        }
+    }
+
     pub fn equipment_override(self, definition: u32) -> Self {
         let key = match self {
+            Self::GrenadeSingle => "sound_single_shot",
+            Self::GrenadeCritical => "sound_burst",
+            Self::GrenadeReload => "sound_reload",
+            Self::GrenadeModeSwitch => "sound_special3",
             Self::BatMiss | Self::ShovelMiss | Self::KukriMiss | Self::FireAxeMiss | Self::WrenchMiss | Self::BottleMiss | Self::BonesawMiss | Self::KnifeMiss | Self::FistMiss => "sound_melee_miss",
             Self::BatHitFlesh | Self::ShovelHitFlesh | Self::KukriHitFlesh | Self::FireAxeHitFlesh | Self::WrenchHitFlesh | Self::BottleHitFlesh | Self::BonesawHitFlesh | Self::KnifeHitFlesh | Self::FistHitFlesh => "sound_melee_hit",
             Self::BatHitWorld | Self::ShovelHitWorld | Self::KukriHitWorld | Self::FireAxeHitWorld | Self::WrenchHitWorld | Self::BottleHitWorld | Self::BonesawHitWorld | Self::KnifeHitWorld | Self::FistHitWorld => "sound_melee_hit_world",
@@ -166,6 +183,7 @@ pub struct SoundSamples {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AudioEventIdentity {
+    PhysicsImpact,
     PlayerFeedback,
     WeaponSingle,
     ExplosionSpecial1,
@@ -176,6 +194,7 @@ pub enum AudioEventIdentity {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AudioSourceKind {
     Entity,
+    Projectile,
     World,
     LocalListener,
     ControlPoint,
@@ -185,6 +204,7 @@ pub enum AudioSourceKind {
 pub enum AudioAction {
     Play,
     PlayAtPitch(f32),
+    PlayAtVolume(f32),
     FadeIn(f32),
     FadeOut(f32),
     Stop,

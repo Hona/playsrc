@@ -568,6 +568,7 @@ dependencies = [
  "playsrc-asset-graph",
  "playsrc-bsp",
  "playsrc-phy",
+ "playsrc-physics",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -669,6 +670,17 @@ dependencies = [
 [[package]]
 name = "playsrc-phy"
 version = "0.1.0"
+dependencies = [
+ "playsrc-keyvalues",
+]
+
+[[package]]
+name = "playsrc-physics"
+version = "0.1.0"
+dependencies = [
+ "playsrc-collision",
+ "playsrc-material",
+]
 
 [[package]]
 name = "playsrc-simulation"
@@ -716,13 +728,18 @@ dependencies = [
  "playsrc-audio",
  "playsrc-bsp",
  "playsrc-collision",
+ "playsrc-content",
  "playsrc-entity",
  "playsrc-keyvalues",
  "playsrc-material",
  "playsrc-movement",
  "playsrc-nav",
+ "playsrc-phy",
+ "playsrc-physics",
  "playsrc-studio-model",
  "playsrc-vmt",
+ "playsrc-vpk",
+ "serde_json",
  "sha2 0.10.9",
 ]
 
@@ -743,6 +760,7 @@ dependencies = [
  "playsrc-nav",
  "playsrc-particle",
  "playsrc-phy",
+ "playsrc-physics",
  "playsrc-simulation",
  "playsrc-studio-model",
  "playsrc-tf2",

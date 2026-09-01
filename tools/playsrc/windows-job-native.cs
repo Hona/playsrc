@@ -40,10 +40,12 @@ public static partial class PlaysrcNativeJob {
  }
  static readonly JavaScriptSerializer Json=new JavaScriptSerializer();
  static long Now {get{return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();}}
- static void Save(string file,object value) {
+ static string Save(string file,object value) {
+  string serialized=Json.Serialize(value);
   string temporary=file+"."+Guid.NewGuid()+".tmp";
-  try {using(var stream=new FileStream(temporary,FileMode.CreateNew,FileAccess.Write,FileShare.None)) using(var writer=new StreamWriter(stream,new UTF8Encoding(false))) {writer.Write(Json.Serialize(value));writer.Flush();stream.Flush(true);} File.Move(temporary,file);}
+  try {using(var stream=new FileStream(temporary,FileMode.CreateNew,FileAccess.Write,FileShare.None)) using(var writer=new StreamWriter(stream,new UTF8Encoding(false))) {writer.Write(serialized);writer.Flush();stream.Flush(true);} File.Move(temporary,file);}
   finally {if(File.Exists(temporary))File.Delete(temporary);}
+  return serialized;
  }
  static Exception Native(string operation) {return new Win32Exception(Marshal.GetLastWin32Error(),operation);}
  static void Check(bool ok,string operation) {if(!ok)throw Native(operation);}
@@ -427,14 +429,12 @@ public static partial class PlaysrcNativeJob {
     }
     if(!receipt.treeEmpty){receipt.outcome="failed";receipt.error="Owned child teardown unconfirmed; "+receipt.error;}
     receipt.finishedAt=Now;
-    // Freeze the receipt before both serializations. A timer tick between the
-    // durable save and stdout must not change an otherwise identical outcome.
+    // Freeze metrics and publish exactly the durable receipt bytes.
     receipt.helperPeakPrivateBytes=Interlocked.Read(ref peakPrivateBytes);
-    Save(Path.Combine(request.run,"native-result.json"),receipt);
+    Console.WriteLine(Save(Path.Combine(request.run,"native-result.json"),receipt));
     Interlocked.Exchange(ref guardDone,1);
    }
    }
   }
-  Console.WriteLine(Json.Serialize(receipt));
  }
 }

@@ -251,6 +251,19 @@ type SourceBundleProducer = Readonly<{ executable: string; generatorSha256: stri
 
 const producers = new Map<string, Promise<SourceBundleProducer>>()
 
+export function sourceBundleExecutable(output:string,filename:string):string {
+  const executables:string[]=[]
+  for(const line of output.split(/\r?\n/u)){
+    if(!line.trim())continue
+    const record=JSON.parse(line) as {reason?:unknown;target?:{name?:unknown;kind?:unknown};executable?:unknown}
+    if(record.reason!=="compiler-artifact"||record.target?.name!=="playsrc-source-bundle"||!Array.isArray(record.target.kind)||!record.target.kind.includes("bin"))continue
+    if(typeof record.executable!=="string"||!path.isAbsolute(record.executable)||path.basename(record.executable)!==filename)throw new Error("Cargo did not produce a native source-bundle executable")
+    executables.push(record.executable)
+  }
+  if(executables.length!==1)throw new Error("Cargo must report exactly one source-bundle executable")
+  return executables[0]!
+}
+
 export async function prepareSourceBundleProducer(config: LocalConfig): Promise<SourceBundleProducer> {
   const identity = await rustBuildIdentity()
   const producerIdentity = `${config.sourceCacheDir}\0${identity}\0${sha256(await readFile(path.join(repositoryRoot, "tools/source-bundle/tf2-ui.generated.json")))}`
@@ -271,6 +284,7 @@ export async function prepareSourceBundleProducer(config: LocalConfig): Promise<
       cargo,
       `+${toolchains.rust.toolchain}`,
       "build",
+      "--message-format=json-render-diagnostics",
       "--profile",
       "source-bundle",
       "-p",
@@ -278,11 +292,12 @@ export async function prepareSourceBundleProducer(config: LocalConfig): Promise<
     ], {
       cwd: repositoryRoot,
       env: environment,
-      stdout: "ignore",
+      stdout: "pipe",
       stderr: "inherit",
     })
-    if (await build.exited !== 0) throw new Error("source bundle build failed")
-    const built = path.join(repositoryRoot, "target", "source-bundle", filename)
+    const [code,output]=await Promise.all([build.exited,new Response(build.stdout).text()])
+    if (code !== 0) throw new Error("source bundle build failed")
+    const built = sourceBundleExecutable(output,filename)
     await mkdir(path.dirname(generatorPath), { recursive: true })
     const temporary = `${generatorPath}.${process.pid}.${crypto.randomUUID()}.tmp`
     try {

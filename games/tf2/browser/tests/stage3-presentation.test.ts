@@ -15,8 +15,24 @@ import {
 import type { PresentationArtifacts } from "../src/artifacts"
 import type { Snapshot } from "../src/codec"
 import type { Tf2SupportedItem } from "../src/equipment/types"
+import { nativeEquipment, stockItems } from "./fixtures/equipment"
 
 const genericActivity = (activity: string) => activity.replace(/^ACT_(?:PRIMARY|SECONDARY|MELEE|FISTS|ENGINEER_PDA1|ENGINEER_PDA2|ENGINEER_BLD)_/, "ACT_")
+
+test("sticky pullback persists during charge and transitions only on the authoritative firing activity", () => {
+  const hands = "models/weapons/c_models/c_demo_arms.mdl"
+  const item = nativeEquipment.inventory.find(item => item.item.definitionIndex === 20)!
+  const descriptor = { kind: "viewmodel", horizontalFov4By3: 54, minimumFov: 54, maximumFov: 70, near: 1, depthRange: [0, 0.1], drawsAfterWorld: true, opaqueBeforeTranslucent: true, optionalViewSpaceYReflection: true }
+  const models = new Map([hands, item.modelPlayer].map(identity => [identity, { identity, descriptor, bodygroupCounts: [], sequences: [] }]))
+  const presenter = createRuntimeViewmodelPresenter({ models } as unknown as PresentationArtifacts, nativeEquipment.inventory)
+  const snapshot = { class: 4, team: 2, tick: 10n, weapon: 3, equippedItems: stockItems(4), lifecycle: 1, velocity: [0, 0, 0],
+    loadout: [{ weapon: 3, reload: 0, clip: 8, chargeBeginTick: 10n, prefirePlaybackRate: null }],
+    activities: [{ tick: 10n, weapon: 3, activity: 14 }] } as unknown as Snapshot
+  expect(presenter.map(snapshot).request).toMatchObject({ activity: "ACT_VM_PULLBACK", activityStartTick: 10n, allowIdleTransition: false })
+  expect(presenter.map({ ...snapshot, tick: 200n, activities: [] }).request).toMatchObject({ activity: "ACT_VM_PULLBACK", activityStartTick: 10n, allowIdleTransition: false })
+  expect(presenter.map({ ...snapshot, tick: 201n, loadout: [{ ...snapshot.loadout[0]!, chargeBeginTick: null, clip: 7 }],
+    activities: [{ tick: 201n, weapon: 3, activity: 2 }] }).request).toMatchObject({ activity: "ACT_VM_PRIMARYATTACK", activityStartTick: 201n, allowIdleTransition: true })
+})
 // These tests provide an inventory projection explicitly; production has no
 // weapon/model fallback. Native tests own role and item-override translation.
 function createViewmodelPresenter(artifacts: PresentationArtifacts, model?: string) {

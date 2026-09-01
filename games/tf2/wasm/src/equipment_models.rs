@@ -217,10 +217,11 @@ mod tests {
     #[ignore = "requires the exact configured equipment resource graph"]
     fn configured_equipment_admission_stages() {
         let graph = std::env::var("PLAYSRC_EQUIPMENT_GRAPH").expect("configured graph path");
+        let objects=std::path::PathBuf::from(std::env::var("PLAYSRC_RESOURCE_OBJECT_DIRECTORY").expect("configured graph object directory"));
         let definitions = std::env::var("PLAYSRC_EQUIPMENT_DEFINITION").ok().map(|value| vec![value.parse::<u32>().unwrap()])
             .unwrap_or_else(|| vec![45, 1103, 425, 1153, 415, 424, 312, 41, 61, 460, 220, 402]);
         for definition in definitions {
-            let bytes = playsrc_asset_graph::read_resource_set(std::path::Path::new(&graph), Some(&format!("equipment-{definition}"))).unwrap();
+            let bytes = playsrc_asset_graph::read_resource_set(std::path::Path::new(&graph), &objects, Some(&format!("equipment-{definition}"))).unwrap();
             let resources = bundle(&bytes).unwrap();
             let hashes = resources.iter().map(|(path, bytes)| (path.clone(), <[u8; 32]>::from(Sha256::digest(bytes)))).collect();
             let decoders = TextureDecoders::new(&resources);

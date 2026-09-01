@@ -773,6 +773,7 @@ fn compact_verified_section(
 
 pub fn read_resource_set(
     graph_path: &std::path::Path,
+    objects: &std::path::Path,
     selected_role: Option<&str>,
 ) -> Result<Vec<u8>, GraphError> {
     let graph_bytes = std::fs::read(graph_path).map_err(|_| GraphError::IntegrityFailure)?;
@@ -784,8 +785,6 @@ pub fn read_resource_set(
     {
         return Err(GraphError::MalformedIdentity);
     }
-    let parent = graph_path.parent().ok_or(GraphError::MalformedIdentity)?;
-    let objects = parent.join(format!("{}.graph/objects", graph.target));
     let mut entries = Vec::new();
     let mut identities = BTreeSet::new();
     for descriptor in graph.chunks.iter().filter(|chunk| {
@@ -814,6 +813,23 @@ mod tests {
             roles: BTreeSet::from([role.to_owned()]),
             bytes,
         }
+    }
+
+    #[test]
+    fn immutable_graph_roots_read_from_an_explicit_separate_object_directory() {
+        struct Temporary(std::path::PathBuf);
+        impl Drop for Temporary {fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}
+        let unique=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root=Temporary(std::env::temp_dir().join(format!("playsrc-detached-graph-{}-{unique}",std::process::id())));
+        let roots=root.0.join("roots");let objects=root.0.join("objects");
+        std::fs::create_dir_all(&roots).unwrap();std::fs::create_dir_all(&objects).unwrap();
+        let chunks=pack(vec![resource("scripts/example.txt","gameplay",vec![1,2,3])]).unwrap();
+        for chunk in &chunks {std::fs::write(objects.join(&chunk.descriptor.encoded_sha256),&chunk.encoded).unwrap();}
+        let graph=ResourceGraph {schema:"playsrc-resource-graph-v1".into(),game:"tf2".into(),content_build:"fixture".into(),target:"fixture".into(),chunks:chunks.iter().map(|chunk|chunk.descriptor.clone()).collect()};
+        let graph_path=roots.join("root.json");std::fs::write(&graph_path,serde_json::to_vec(&graph).unwrap()).unwrap();
+        let actual=read_resource_set(&graph_path,&objects,Some("gameplay")).unwrap();
+        assert_eq!(actual,encode_resource_set(&[DecodedEntry {logical_path:"scripts/example.txt".into(),bytes:vec![1,2,3]}]).unwrap());
+        assert!(read_resource_set(&graph_path,&roots,Some("gameplay")).is_err());
     }
 
     #[test]

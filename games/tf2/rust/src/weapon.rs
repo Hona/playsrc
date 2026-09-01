@@ -70,6 +70,7 @@ pub enum WeaponActivity {
     FistRight,
     Prefire,
     Postfire,
+    Pullback,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -226,7 +227,9 @@ impl WeaponProfile {
                 maximum_clip: 4,
                 maximum_reserve: 16,
                 fire_delay: 0.6,
-                reload_start: 0.1,
+                // Authored g_reload_start: 19 frames at 30 FPS. Reload loops
+                // deliberately use the script duration in CTFWeaponBase.
+                reload_start: 18.0 / 30.0,
                 reload_round: 0.6,
                 maximum_charge: None,
                 center_fire_projectile: false,
@@ -464,6 +467,7 @@ pub struct WeaponRuntime {
     pub reload: ReloadPhase,
     pub next_primary_tick: u64,
     pub reload_due_tick: Option<u64>,
+    reload_prior_next_primary_tick:u64,
     pub charge_begin_tick: Option<u64>,
     pub first_primary_tick: u64,
 
@@ -531,6 +535,7 @@ impl WeaponRuntime {
             reload: ReloadPhase::Ready,
             next_primary_tick: 0,
             reload_due_tick: None,
+            reload_prior_next_primary_tick:0,
             charge_begin_tick: None,
             first_primary_tick: 0,
 
@@ -550,6 +555,15 @@ impl WeaponRuntime {
 
     pub fn profile(self) -> WeaponProfile {
         self.resolved_profile
+    }
+
+    pub fn charge_progress(self, tick: u64, interval: f32) -> Option<f32> {
+        let maximum = self.profile().maximum_charge?;
+        if maximum == 0.0 { return None; }
+        let begin = self.charge_begin_tick.map_or(0.0, |tick| tick as f32 * interval);
+        Some(if begin > 0.0 {
+            ((tick as f32 * interval - begin).max(0.0) / maximum).min(1.0)
+        } else { 0.0 })
     }
 
     pub fn sniper_damage(self) -> Option<f32> {
@@ -630,6 +644,7 @@ impl WeaponRuntime {
     ) -> bool {
         let profile = self.profile();
         if self.reload != ReloadPhase::Ready
+            || self.charge_begin_tick.is_some()
             || self.reserve == 0
             || self.clip >= profile.maximum_clip
             || tick < self.next_primary_tick
@@ -637,10 +652,10 @@ impl WeaponRuntime {
             return false;
         }
         self.reload = ReloadPhase::Start;
-        self.reload_due_tick =
-            Some(tick.saturating_add(delay_ticks(profile.reload_start, tick_interval)));
+        self.reload_due_tick = Some(source_deadline_tick(tick,profile.reload_start,tick_interval));
+        self.reload_prior_next_primary_tick=self.next_primary_tick;
+        self.next_primary_tick=self.next_primary_tick.max(self.reload_due_tick.unwrap());
         self.hitscan.idle_tick = self.reload_due_tick.unwrap();
-        if profile.reload_round == 0.0 { self.next_primary_tick = self.next_primary_tick.max(self.reload_due_tick.unwrap()); }
         activities.push(ActivityEvent {
             tick,
             weapon: self.weapon,
@@ -653,6 +668,16 @@ impl WeaponRuntime {
         true
     }
 
+    // Portions adapted from Valve's Source SDK 2013. Copyright Valve Corporation,
+    // All rights reserved. See LICENSE.source-sdk-2013 and thirdpartylegalnotices.txt.
+    pub fn reload_frame(&mut self,tick:u64,tick_interval:f32,requested:bool,activities:&mut Vec<ActivityEvent>,ammo:&mut Vec<AmmoEvent>) {
+        if requested||(self.profile().reload_round>0.0&&self.clip==0) {
+            if self.reload==ReloadPhase::Ready {self.start_reload(tick,tick_interval,activities);}
+            else {self.advance_reload(tick,tick_interval,activities,ammo);}
+        }
+        if self.reload!=ReloadPhase::Ready {self.advance_reload(tick,tick_interval,activities,ammo);}
+    }
+
     pub fn advance_reload(
         &mut self,
         tick: u64,
@@ -663,7 +688,7 @@ impl WeaponRuntime {
         let Some(due) = self.reload_due_tick else {
             return;
         };
-        if tick < due {
+        if tick < due || tick < self.next_primary_tick {
             return;
         }
         let profile = self.profile();
@@ -697,8 +722,9 @@ impl WeaponRuntime {
                     self.reload_due_tick = None;
                 } else {
                     self.reload = ReloadPhase::Insert;
-                    self.reload_due_tick =
-                        Some(tick.saturating_add(delay_ticks(profile.reload_round, tick_interval)));
+                    self.reload_due_tick = Some(source_deadline_tick(tick,profile.reload_round,tick_interval));
+                    self.reload_prior_next_primary_tick=self.next_primary_tick;
+                    self.next_primary_tick=self.next_primary_tick.max(self.reload_due_tick.unwrap());
                     activities.push(ActivityEvent {
                         tick,
                         weapon: self.weapon,
@@ -721,13 +747,8 @@ impl WeaponRuntime {
                     self.reload = ReloadPhase::Finish;
                     self.reload_due_tick = Some(tick);
                 } else {
-                    self.reload_due_tick =
-                        Some(tick.saturating_add(delay_ticks(profile.reload_round, tick_interval)));
-                    activities.push(ActivityEvent {
-                        tick,
-                        weapon: self.weapon,
-                        activity: WeaponActivity::ReloadLoop,
-                    });
+                    self.reload=ReloadPhase::Start;
+                    self.reload_due_tick=Some(tick);
                 }
             }
             ReloadPhase::Finish => {
@@ -777,6 +798,13 @@ impl WeaponRuntime {
         released: bool,
         activities: &mut Vec<ActivityEvent>,
     ) -> PrimaryResult {
+        if held && self.clip>0 && self.reload!=ReloadPhase::Ready
+            && self.reload_due_tick.is_some_and(|due|tick<due)
+            && self.profile().reload_round>0.0 {
+            self.next_primary_tick=tick.max(self.reload_prior_next_primary_tick);
+            self.abort_reload();
+            return PrimaryResult::None;
+        }
         if !held && !secondary { self.hitscan.idle(tick); }
         if self.weapon == Weapon::HandgunScoutPrimary && secondary && tick >= self.next_secondary_tick {
             self.next_primary_tick = source_deadline_tick(tick, 0.6, tick_interval);
@@ -786,9 +814,6 @@ impl WeaponRuntime {
         }
         if self.weapon == Weapon::Minigun {
             return self.minigun_attack(tick, tick_interval, held, secondary, activities);
-        }
-        if self.weapon == Weapon::GrenadeLauncher {
-            return PrimaryResult::None;
         }
         if self.weapon == Weapon::Fists {
             if (held || secondary) && tick >= self.next_primary_tick {
@@ -809,7 +834,7 @@ impl WeaponRuntime {
         let profile = self.profile();
         if let Some(maximum_charge) = profile.maximum_charge {
             if let Some(begin) = self.charge_begin_tick {
-                let charge = elapsed_seconds(begin, tick, tick_interval).min(maximum_charge);
+                let charge = (tick as f32 * tick_interval - begin as f32 * tick_interval).min(maximum_charge);
                 if (released && self.clip > 0) || charge >= maximum_charge {
                     return self.commit_shot(tick, tick_interval, charge, activities);
                 }
@@ -818,6 +843,9 @@ impl WeaponRuntime {
             if held && self.clip > 0 && tick >= self.next_primary_tick {
                 self.charge_begin_tick = Some(tick);
                 self.abort_reload();
+                if self.weapon == Weapon::StickybombLauncher {
+                    activities.push(ActivityEvent { tick, weapon: self.weapon, activity: WeaponActivity::Pullback });
+                }
                 return PrimaryResult::ChargeStarted;
             }
             return PrimaryResult::None;
@@ -964,11 +992,7 @@ impl WeaponRuntime {
         if self.weapon != Weapon::SniperRifle {
             self.charge_begin_tick = None;
         }
-        self.next_primary_tick = if self.weapon == Weapon::EngineerPistol {
-            source_deadline_tick(tick, self.profile().fire_delay, tick_interval)
-        } else {
-            tick.saturating_add(delay_ticks(self.profile().fire_delay, tick_interval))
-        };
+        self.next_primary_tick = source_deadline_tick(tick, self.profile().fire_delay, tick_interval);
         activities.push(ActivityEvent {
             tick,
             weapon: self.weapon,
@@ -1216,12 +1240,14 @@ mod tests {
         ));
         assert_eq!(runtime.clip, 2);
         assert_eq!(runtime.next_primary_tick, delay_ticks(0.4, 0.015));
+        let fire_due=runtime.next_primary_tick;
         assert!(!runtime.start_reload(runtime.next_primary_tick - 1, 0.015, &mut activities));
         assert!(runtime.start_reload(runtime.next_primary_tick, 0.015, &mut activities));
         assert_eq!(
             runtime.reload_due_tick,
-            Some(runtime.next_primary_tick + delay_ticks(0.25, 0.015))
+            Some(fire_due + delay_ticks(0.25, 0.015))
         );
+        assert_eq!(Some(runtime.next_primary_tick),runtime.reload_due_tick);
         let due = runtime.reload_due_tick.unwrap();
         runtime.advance_reload(due, 0.015, &mut activities, &mut Vec::new());
         assert_eq!(
@@ -1231,7 +1257,51 @@ mod tests {
     }
 
     #[test]
-    fn demoman_stock_profiles_preserve_exact_scripts_without_inventing_grenade_physics() {
+    fn sticky_charge_uses_float_curtimes_for_release_and_auto_fire() {
+        let interval = 0.015_f32;
+        for begin in [1_u64, 41, 50_000, 1_000_000, 5_000_000] {
+            for held_ticks in [1, 13, 67, 133] {
+                let mut runtime = WeaponRuntime::full(Weapon::StickybombLauncher);
+                let mut activities = Vec::new();
+                assert_eq!(runtime.primary(begin, interval, true, false, &mut activities), PrimaryResult::ChargeStarted);
+                let tick = begin + held_ticks;
+                let PrimaryResult::Fired { charge_seconds } = runtime.primary(tick, interval, false, true, &mut activities) else { panic!("released sticky did not fire") };
+                let expected = tick as f32 * interval - begin as f32 * interval;
+                assert_eq!(charge_seconds.to_bits(), expected.to_bits(), "begin={begin}, held={held_ticks}");
+                assert_eq!(runtime.clip, 7);
+                assert_eq!(runtime.charge_begin_tick, None);
+            }
+            let mut runtime = WeaponRuntime::full(Weapon::StickybombLauncher);
+            let mut activities = Vec::new();
+            assert_eq!(runtime.primary(begin, interval, true, false, &mut activities), PrimaryResult::ChargeStarted);
+            let due = (begin + 1..begin + 300).find(|tick| *tick as f32 * interval - begin as f32 * interval >= 4.0).unwrap();
+            for tick in begin + 1..due {
+                assert_eq!(runtime.primary(tick, interval, true, false, &mut activities), PrimaryResult::None);
+            }
+            assert_eq!(runtime.primary(due, interval, true, false, &mut activities), PrimaryResult::Fired { charge_seconds: 4.0 });
+            assert_eq!(runtime.clip, 7);
+        }
+    }
+
+    #[test]
+    fn sticky_hud_charge_preserves_float_time_progress_and_idle_sentinel() {
+        let mut weapon = WeaponRuntime::full(Weapon::StickybombLauncher);
+        assert_eq!(weapon.charge_progress(200, 0.015), Some(0.0));
+        weapon.charge_begin_tick = Some(0);
+        assert_eq!(weapon.charge_progress(200, 0.015), Some(0.0));
+        for begin in [41_u64, 50_000, 5_000_000] {
+            weapon.charge_begin_tick = Some(begin);
+            for tick in [begin - 1, begin, begin + 1, begin + 133, begin + 267, begin + 400] {
+                let expected = ((tick as f32 * 0.015_f32 - begin as f32 * 0.015_f32).max(0.0) / 4.0).min(1.0);
+                assert_eq!(weapon.charge_progress(tick, 0.015).unwrap().to_bits(), expected.to_bits());
+            }
+        }
+        assert_eq!(WeaponRuntime::full(Weapon::GrenadeLauncher).charge_progress(200, 0.015), None);
+        assert_eq!(WeaponRuntime::full(Weapon::Bottle).charge_progress(200, 0.015), None);
+    }
+
+    #[test]
+    fn demoman_stock_profiles_preserve_configured_scripts_and_held_primary_cadence() {
         let grenade = WeaponProfile::configured(Weapon::GrenadeLauncher);
         assert_eq!((grenade.maximum_clip, grenade.maximum_reserve), (4, 16));
         assert_eq!(
@@ -1240,7 +1310,7 @@ mod tests {
                 grenade.reload_start,
                 grenade.reload_round
             ),
-            (0.6, 0.1, 0.6)
+            (0.6, 0.6, 0.6)
         );
         let bottle = WeaponProfile::configured(Weapon::Bottle);
         assert_eq!(
@@ -1256,10 +1326,13 @@ mod tests {
         let mut activities = Vec::new();
         assert_eq!(
             grenade.primary(10, 0.015, true, false, &mut activities),
-            PrimaryResult::None,
+            PrimaryResult::Fired {charge_seconds:0.0},
         );
-        assert_eq!((grenade.clip, grenade.reserve), (4, 16));
-        assert!(activities.is_empty());
+        assert_eq!((grenade.clip, grenade.reserve,grenade.next_primary_tick), (3, 16,50));
+        assert_eq!(activities.len(),1);
+        assert_eq!(grenade.primary(49,0.015,true,false,&mut activities),PrimaryResult::None);
+        assert_eq!(grenade.primary(50,0.015,true,false,&mut activities),PrimaryResult::Fired {charge_seconds:0.0});
+        activities.clear();
 
         let mut bottle = WeaponRuntime::full(Weapon::Bottle);
         assert_eq!(
@@ -1421,7 +1494,7 @@ mod tests {
         ));
         assert_eq!(
             (shovel.clip, shovel.reserve, shovel.next_primary_tick),
-            (0, 0, 80)
+            (0, 0, 81)
         );
         assert!(!shovel.start_reload(80, 0.01, &mut activities));
     }
@@ -1482,9 +1555,12 @@ mod tests {
         let mut activities = Vec::new();
         let mut ammo = Vec::new();
         assert!(pistol.start_reload(10, 0.01, &mut activities));
+        assert_eq!(pistol.reload_due_tick,Some(61));
         pistol.advance_reload(59, 0.01, &mut activities, &mut ammo);
         assert_eq!((pistol.clip, pistol.reserve), (3, 7));
         pistol.advance_reload(60, 0.01, &mut activities, &mut ammo);
+        assert_eq!((pistol.clip,pistol.reserve),(3,7));
+        pistol.advance_reload(61,0.01,&mut activities,&mut ammo);
         assert_eq!((pistol.clip, pistol.reserve), (10, 0));
         assert_eq!(ammo.len(), 1);
         assert_eq!(pistol.reload, ReloadPhase::Ready);
@@ -1536,15 +1612,43 @@ mod tests {
         assert_eq!(weapon.reload_due_tick, Some(134));
         weapon.advance_reload(134, 0.01, &mut activities, &mut ammo);
         assert_eq!((weapon.clip, weapon.reserve), (3, 19));
+        assert_eq!(weapon.reload, ReloadPhase::Start);
+        weapon.advance_reload(134, 0.01, &mut activities, &mut ammo);
         assert_eq!(weapon.reload, ReloadPhase::Insert);
         assert_eq!(ammo.len(), 1);
 
+        assert_eq!(weapon.primary(135,0.01,true,false,&mut activities),PrimaryResult::None);
+        assert_eq!(weapon.reload,ReloadPhase::Ready);
         assert!(matches!(
-            weapon.primary(135, 0.01, true, false, &mut activities),
+            weapon.primary(136, 0.01, true, false, &mut activities),
             PrimaryResult::Fired { .. }
         ));
         assert_eq!(weapon.reload, ReloadPhase::Ready);
         assert_eq!((weapon.clip, weapon.reserve), (2, 19));
+    }
+
+    #[test]
+    fn requested_reload_and_post_frame_are_separate_source_mode_calls() {
+        for requested in [false,true] {
+            let mut weapon=WeaponRuntime::full(Weapon::RocketLauncher);weapon.clip=3;weapon.reserve=1;
+            let mut activities=Vec::new();let mut ammo=Vec::new();
+            assert!(weapon.start_reload(0,0.01,&mut activities));
+            weapon.reload_frame(50,0.01,requested,&mut activities,&mut ammo);
+            assert_eq!(weapon.reload,ReloadPhase::Insert);
+            weapon.reload_frame(134,0.01,requested,&mut activities,&mut ammo);
+            assert_eq!((weapon.clip,weapon.reserve),(4,0));
+            if requested {
+                assert_eq!(weapon.reload,ReloadPhase::Ready);
+                assert_eq!(activities.last().unwrap().tick,134);
+            }else{
+                assert_eq!(weapon.reload,ReloadPhase::Finish);
+                weapon.reload_frame(135,0.01,false,&mut activities,&mut ammo);
+                assert_eq!(weapon.reload,ReloadPhase::Ready);
+                assert_eq!(activities.last().unwrap().tick,135);
+            }
+            assert_eq!(activities.last().unwrap().activity,WeaponActivity::ReloadFinish);
+            assert_eq!(ammo.len(),1);
+        }
     }
 
     #[test]

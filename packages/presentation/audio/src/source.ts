@@ -86,7 +86,7 @@ export type StartSound = Readonly<{
   source: SoundSource
   listener: Listener
   samples: SoundSamples
-  overrides?: Readonly<{ volume?: number; pitch?: number }>
+  overrides?: Readonly<{ volume?: number; pitch?: number; channel?: 6 }>
   resourceDurationSeconds: number
   resourceLoopStartSeconds: number | null
   resourceChannels: number
@@ -352,7 +352,8 @@ export class SourceAudioWorld {
     if (!Number.isFinite(volume)||volume<0||volume>1||pitch <= 0 || pitch > 255 || soundLevel < 0 || soundLevel > 511) {
       throw error("MalformedEvent", "resolved pitch or sound level is outside its encoded range")
     }
-    const channel = selected.decorators.includes("stream") ? 5 : definition.channel
+    if (event.overrides?.channel !== undefined && event.overrides.channel !== 6) throw error("MalformedEvent", "physical impact channel must be static")
+    const channel = selected.decorators.includes("stream") ? 5 : event.overrides?.channel ?? definition.channel
     const replaced = this.#replacement(channel, event)
     const looped = event.resourceLoopStartSeconds !== null
     this.#enforceConcurrency(resource, looped, event, replaced)

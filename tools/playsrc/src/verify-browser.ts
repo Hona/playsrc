@@ -2316,14 +2316,18 @@ export async function verifyBrowserAcceptance(
     await agent(["--session", session, "press", "2"])
     await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.hudProbe?.split(':')[2]==='3'", "--timeout", "30000"])
     await automation.pointer.capture("sticky")
+    const stickySelectedTick=parseJson<number>(await agent(["--session",session,"eval","Number(document.querySelector('main').dataset.snapshotTick)"]))
+    await agent(["--session",session,"wait","--fn",`Number(document.querySelector('main').dataset.snapshotTick)>${stickySelectedTick+40}`,"--timeout","5000"])
     await automation.player.pressPrimaryFire()
-    await agent(["--session",session,"wait","--fn","document.querySelector('main').dataset.unsupportedState==='StickyPhysicsSolverUnavailable'","--timeout","30000"])
+    const stickyPressedTick=parseJson<number>(await agent(["--session",session,"eval","Number(document.querySelector('main').dataset.snapshotTick)"]))
+    await agent(["--session",session,"wait","--fn",`Number(document.querySelector('main').dataset.snapshotTick)>${stickyPressedTick+5}`,"--timeout","5000"])
     await automation.player.releasePrimaryFire()
+    await agent(["--session",session,"wait","--fn","Number(document.querySelector('main').dataset.projectiles)>0","--timeout","5000"])
     const stickyLaunch = parseJson<{ fire: number; projectiles:number; unsupported:string; phase: string }>(await agent([
       "--session", session, "eval",
       "(()=>{const d=document.querySelector('main').dataset;return {fire:Number(d.fireEvents),projectiles:Number(d.projectiles),unsupported:d.unsupportedState,phase:d.phase}})()",
     ]))
-    require(stickyLaunch.projectiles===0&&stickyLaunch.unsupported==="StickyPhysicsSolverUnavailable"&&stickyLaunch.phase==="Ready",`unsupported sticky Physics state was not atomic: ${JSON.stringify(stickyLaunch)}`)
+    require(stickyLaunch.projectiles>0&&!stickyLaunch.unsupported&&stickyLaunch.phase==="Ready",`owned sticky launch failed: ${JSON.stringify(stickyLaunch)}`)
     const supportBlockerItems = parseJson<string[]>(await agent([
       "--session", session, "eval", "JSON.parse(document.querySelector('main').dataset.blockers)",
     ]))
@@ -2339,7 +2343,7 @@ export async function verifyBrowserAcceptance(
     require(blockerPartition.platform.length >= 1,
       `content closure platform classification count changed: ${JSON.stringify(blockerPartition.platform)}`)
     require(!blockerPartition.authorityBehavior.some((blocker) => blocker.includes("random stream")) &&
-      blockerPartition.authorityBehavior.some((blocker) => blocker.includes("sticky IVP solver unavailable")) &&
+      !blockerPartition.authorityBehavior.some((blocker) => blocker.includes("rigid-body resources have not been admitted")) &&
       blockerPartition.authorityBehavior.some((blocker) => blocker.includes("Tempus core and configured Jump course contract unavailable")),
     `authority blocker ledger differs: ${JSON.stringify(blockerPartition.authorityBehavior)}`)
     await agent(["--session", session, "press", "Escape"])

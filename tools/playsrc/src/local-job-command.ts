@@ -1,12 +1,12 @@
 import { parseHeadedProfile } from "./profile-runner"
 import { TF2_TARGET_NAMES } from "@playsrc/game-tf2-browser/maps"
 
-export type LocalPreparationStage = Readonly<{ kind: "wasm" | "producer" }> | Readonly<{ kind: "resources"; target: string }>
+export type LocalPreparationStage = Readonly<{ kind: "wasm" | "producer" | "browser" }> | Readonly<{ kind: "resources"; target: string }>
 
 export function parseLocalPreparationStage(args: readonly string[]): LocalPreparationStage {
-  if (args.length === 1 && (args[0] === "wasm" || args[0] === "producer")) return { kind: args[0] }
+  if (args.length === 1 && (args[0] === "wasm" || args[0] === "producer" || args[0] === "browser")) return { kind: args[0] }
   if (args.length === 2 && args[0] === "resources" && (TF2_TARGET_NAMES as readonly string[]).includes(args[1]!)) return { kind: "resources", target: args[1]! }
-  throw new Error("build-stage accepts wasm | producer | resources <configured map>")
+  throw new Error("build-stage accepts wasm | producer | browser | resources <configured map>")
 }
 
 /** One authority for queue transport, native dispatch and ownership readback.
@@ -35,5 +35,5 @@ export function localJobCommand(args: readonly string[]): { command: string[]; i
   if (kind === "diagnostic" && options.length === 2 && /^\d{1,5}$/.test(options[0]!) && Number(options[0]) <= 30_000 && /^[01]$/.test(options[1]!)) {
     return { command: ["tools/playsrc/src/local-job-diagnostic.ts", ...options], interactive: false }
   }
-  throw new Error("Expected test [files...], build <map>, build-stage wasm|producer|resources <map>, or profile <normal profile name> [normal profiler options]")
+  throw new Error("Expected test [files...], build <map>, build-stage wasm|producer|browser|resources <map>, or profile <normal profile name> [normal profiler options]")
 }

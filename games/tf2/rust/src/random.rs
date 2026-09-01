@@ -58,6 +58,7 @@ pub enum RandomDecision {
     ScorchShotBounceVelocity,
     ScorchShotBounceAngle,
     ScorchShotBounceSign,
+    BlastForce,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

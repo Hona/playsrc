@@ -1,8 +1,8 @@
 use playsrc_bsp::{Limits as BspLimits, Profile as BspProfile, parse as parse_bsp};
 use playsrc_collision::{
     CONTENTS_GRATE, CONTENTS_TRANSLUCENT, Feature, Hit, Hull, MASK_PLAYERSOLID, ObjectInput,
-    ObjectRole, PhysicsShape, SNAPSHOT_VERSION, Snapshot, SnapshotLimits, SnapshotRayRequest,
-    SnapshotShape, SnapshotTraceRequest, TraceScope, Transform, World, compile,
+    ObjectRole, PhysicalModelInventory, PhysicsShape, SNAPSHOT_VERSION, Snapshot, SnapshotLimits,
+    SnapshotRayRequest, SnapshotShape, SnapshotTraceRequest, TraceScope, Transform, World, compile,
 };
 use playsrc_phy::{Limits as PhyLimits, Profile as PhyProfile, parse_standalone};
 use serde::Deserialize;
@@ -48,6 +48,58 @@ fn configured_jump_beef_rocket_and_mover_inputs_are_queryable() {
     assert_eq!(world.models.len(), 123);
     assert_eq!(world.model_brushes.len(), 123);
     assert_eq!(world.model_contents.len(), 123);
+    let physical = PhysicalModelInventory::compile(&world, &bsp, SnapshotLimits::default())
+        .expect("configured map exposes all authored BSP physical models");
+    assert_eq!(physical.world_identity(), world.identity);
+    assert_eq!(physical.models().len(), 123);
+    let payloads = bsp.physics_models(123).unwrap();
+    for model in physical.models() {
+        let payload = payloads
+            .iter()
+            .find(|payload| payload.model_index == model.model)
+            .unwrap();
+        assert_eq!(model.key_data.raw.as_slice(), payload.keydata);
+    }
+    assert_eq!(
+        physical
+            .model(0)
+            .unwrap()
+            .key_data
+            .blocks
+            .iter()
+            .map(|block| block.name.as_slice())
+            .collect::<Vec<_>>(),
+        [
+            b"staticsolid".as_slice(),
+            b"staticsolid".as_slice(),
+            b"fluid".as_slice(),
+            b"virtualterrain".as_slice(),
+            b"materialtable".as_slice()
+        ]
+    );
+    assert_eq!(
+        physical
+            .models()
+            .iter()
+            .map(|model| model.solids.len())
+            .sum::<usize>(),
+        125
+    );
+    let world_solids = &physical.model(0).unwrap().solids;
+    assert_eq!(world_solids.len(), 3);
+    assert_eq!(
+        world_solids
+            .iter()
+            .map(|solid| solid.contents)
+            .collect::<Vec<_>>(),
+        [33_570_827, 65_536, 268_435_488]
+    );
+    assert_eq!(
+        world_solids[2].surface_property.as_deref(),
+        Some(b"water".as_slice())
+    );
+    assert!(world_solids[0].shape.authored_convex(0).is_some());
+    assert!(world_solids[0].shape.authored_properties().is_some());
     let water_point = [-4832.0, 3000.0, -2215.0];
     let water = world.point_contents(water_point).unwrap();
     assert_eq!(water.contents, 0x1000_0020);
@@ -239,6 +291,7 @@ fn configured_jump_beef_rocket_and_mover_inputs_are_queryable() {
 
     let bundle_bytes = playsrc_asset_graph::read_resource_set(
         &cache.join("browser-bundles/jump_beef.graph.json"),
+        &cache.join("browser-bundles/jump_beef.graph/objects"),
         None,
     )
     .unwrap();
@@ -262,6 +315,50 @@ fn configured_jump_beef_rocket_and_mover_inputs_are_queryable() {
     .unwrap();
     let shape = PhysicsShape::from_phy(2, &locker, 0, SnapshotLimits::default(), |_| 1).unwrap();
     assert!(shape.convex_count() > 0);
+    let properties = shape.authored_properties().unwrap();
+    assert_eq!(
+        properties.center.map(f32::to_bits),
+        locker.solids[0].center_bits.map(|component| component.0)
+    );
+    assert_eq!(
+        properties.inertia.map(f32::to_bits),
+        locker.solids[0].inertia_bits.map(|component| component.0)
+    );
+    assert_eq!(properties.radius.to_bits(), locker.solids[0].radius_bits.0);
+    assert_eq!(
+        properties.max_surface_deviation,
+        locker.solids[0].max_surface_deviation
+    );
+    assert_eq!(
+        properties.drag_axes.map(|axes| axes.map(f32::to_bits)),
+        locker.solids[0]
+            .drag_axis_bits
+            .map(|axes| axes.map(|component| component.0))
+    );
+    for (index, source) in locker.solids[0].convexes.iter().enumerate() {
+        let authored = shape.authored_convex(index).unwrap();
+        let source = &locker.solids[0].geometries[source.geometry];
+        assert_eq!(authored.raw_header, source.raw_header);
+        assert_eq!(authored.points.len(), source.points.len());
+        assert_eq!(authored.triangles.len(), source.triangles.len());
+        for (actual, expected) in authored.points.iter().zip(&source.points) {
+            assert_eq!(
+                actual.map(f32::to_bits),
+                expected.source_bits.map(|axis| axis.0)
+            );
+        }
+        for (actual, expected) in authored.triangles.iter().zip(&source.triangles) {
+            assert_eq!(actual.vertices, expected.point_indices);
+            assert_eq!(actual.raw, expected.raw);
+            assert_eq!(
+                actual.edge_words(),
+                std::array::from_fn(|edge| {
+                    u32::from_le_bytes(expected.raw[4 + edge * 4..8 + edge * 4].try_into().unwrap())
+                })
+            );
+        }
+    }
+    assert!(shape.authored_convex(shape.convex_count()).is_none());
     let bounds = shape.local_bounds();
     let center = scale(add(bounds.mins, bounds.maxs), 0.5);
     let prop = Snapshot::compile(
@@ -278,11 +375,32 @@ fn configured_jump_beef_rocket_and_mover_inputs_are_queryable() {
             collision_group: 0,
             contents: 0,
             surface_flags: 0,
-            shape: SnapshotShape::Physics(Arc::new(shape)),
+            shape: SnapshotShape::Physics(Arc::new(playsrc_physics::ShapeCastModel::new(Arc::new(shape)).unwrap())),
         }],
         SnapshotLimits::default(),
     )
     .unwrap();
+    let SnapshotShape::Physics(snapshot_shape) = &prop.records()[0].shape else {
+        panic!("configured model snapshot lost its immutable physics shape");
+    };
+    let snapshot_shape = snapshot_shape.geometry();
+    assert_eq!(snapshot_shape.authored_properties(), Some(properties));
+    for (index, source) in locker.solids[0].convexes.iter().enumerate() {
+        let authored = snapshot_shape.authored_convex(index).unwrap();
+        let source = &locker.solids[0].geometries[source.geometry];
+        assert_eq!(
+            authored
+                .triangles
+                .iter()
+                .map(|triangle| triangle.raw)
+                .collect::<Vec<_>>(),
+            source
+                .triangles
+                .iter()
+                .map(|triangle| triangle.raw)
+                .collect::<Vec<_>>()
+        );
+    }
     let trace = World::empty()
         .trace_snapshot_ray(
             &prop,

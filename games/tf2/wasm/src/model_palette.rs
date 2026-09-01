@@ -169,6 +169,7 @@ mod tests {
                 }, entity_angles: EntityAngleConvention::DegreesPitchYawRollForwardLeftUpColumns,
                 root_bone: RootBoneContract::AnimatedBelowEntity, depth_range: [zero, Float32(1.0f32.to_bits())],
             }, checksum: 0, flags: 0, basis: ModelBasis { forward: vector, left: vector, up: vector },
+            collision_bounds: [vector; 2],
             dependencies: vec![], base_material_count: 2,
             materials: (0..2).map(|slot| PresentationMaterial { slot, source_slot: slot, lod: None,
                 authored_name: vec![], material_dependency: 0, include_dependencies: vec![], textures: vec![] }).collect(),
@@ -302,8 +303,9 @@ mod tests {
         use super::super::{build_model_presentation, bundle};
         use sha2::{Digest, Sha256};
         let graph = std::env::var("PLAYSRC_PALETTE_GRAPH").expect("configured resource graph");
+        let objects=std::path::PathBuf::from(std::env::var("PLAYSRC_RESOURCE_OBJECT_DIRECTORY").expect("configured graph object directory"));
         let bytes =
-            playsrc_asset_graph::read_resource_set(std::path::Path::new(&graph), Some("gameplay"))
+            playsrc_asset_graph::read_resource_set(std::path::Path::new(&graph), &objects, Some("gameplay"))
                 .unwrap();
         let resources = bundle(&bytes).unwrap();
         let hashes = resources

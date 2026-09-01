@@ -23,6 +23,8 @@ export function requireMacPageAdmission(record: MacPageAdmission): void {
   if (record.error) throw new Error(record.error)
   if (!record.linkage || !record.window) throw new Error("Missing measured page/native window linkage")
   if (record.occluders?.length) throw new Error(`Native drawing window is occluded: ${record.occluders.map(w => `${w.owner} pid=${w.pid} window=${w.id} layer=${w.layer}`).join(", ")}`)
+  if (record.snapshot?.frontmostPid !== record.linkage.browserPid
+    || record.snapshotAfter && record.snapshotAfter.frontmostPid !== record.linkage.browserPid) throw new Error("Measured browser is not the native foreground application")
   if (record.document && record.document.visibility !== "visible") throw new Error("Measured page is not the visible document in its native window")
 }
 

@@ -16,7 +16,7 @@ The same command writes `jump_beef.dependencies.json`: 944 bounded requests comp
 
 Normal generation uses the bounded `source-bundle` Cargo profile, omits the `verify-hdr` dependency closure, reuses already resolved logical paths, converts UI textures through at most eight scoped workers, allocates exact serialized capacities, and compares installed artifacts through a fixed 64 KiB buffer before deterministic path-ordered publication. On the measured Windows host, a clean native build decreased from 48,550 ms to 26,390 ms; generation measured 5,388 ms and exact warm resolution measured 210 ms.
 
-`bun run verify:tf2-wasm jump_beef` internally invokes the bounded `--verify-hdr` evidence mode. That mode writes `jump_beef.native-hdr.psmp` beside the bundle and reports its payload and derived hashes for byte comparison with WASM; it is not a development, publication, or browser prerequisite.
+`bun run verify:tf2-wasm jump_beef` invokes `--verify-hdr` evidence mode. It writes native HDR/LDR payloads beside the bundle for byte comparison and derives particle expectations from the configured PCF consumers, composed VMTs and VTF metadata. `--particles-only` restricts the verifier to that source-bound material/texture/state comparison; it is not full gameplay acceptance. Neither mode publishes assets.
 
 `bun run diagnose:presentation-bound pl_upward` runs the non-publishing static-prop diagnostic three times, requires byte-identical producer output, checksum/LOD/mesh/vertex joins for all 2,480 selected VHV objects, records presentation sections, unique/repeated source and decoded texture bytes, wall time and peak native resident memory, and writes one machine-readable report under `sourceCacheDir/evidence/presentation-bound/pl_upward`.
 

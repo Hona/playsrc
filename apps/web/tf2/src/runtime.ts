@@ -284,7 +284,7 @@ export type ApplicationView = Readonly<{
   medigunCharge?: number
   medigunTarget?: number | null
   medigunReleasing?: boolean
-  unsupportedState?: "StickyPhysicsSolverUnavailable" | "GrenadePhysicsSolverUnavailable"
+  unsupportedState?: "RigidResourcesUnavailable"
   startupState?: Tf2StartupState["kind"]
   loadingProgress?: number
   loadingStatus?: string
@@ -4351,6 +4351,7 @@ export class Tf2Application {
     }
     this.#audioWorld.refreshSpatial(listener, source => {
       if (source.kind !== "entity") return undefined
+      if (source.sourceClass === "tf_projectile") return snapshot.projectiles.find(projectile => projectile.identity === source.identity)?.position
       if (source.sourceClass === "tf_weapon" || source.sourceClass === "player" || source.sourceClass === "tf_player") {
         const owner = source.sourceClass === "tf_weapon" ? source.ownerIdentity ?? source.identity : source.identity
         return owner === 1 ? snapshot.position : snapshot.bots.find(bot => bot.identity === owner)?.position
@@ -4555,11 +4556,10 @@ export class Tf2Application {
     const forward = Number(this.#buttons.held("+forward")) - Number(this.#buttons.held("+back"))
     const side = Number(this.#buttons.held("+moveleft")) - Number(this.#buttons.held("+moveright"))
     const attacking = this.#buttons.held("+attack") || this.#firePressed
-    const unsupportedProjectile = this.#snapshot?.class === 4 && attacking && (this.#snapshot.weapon === 3 || this.#snapshot.weapon === 18)
+    const unsupportedProjectile = this.#snapshot?.class === 4 && attacking && (this.#snapshot.weapon === 18 || this.#snapshot.weapon === 3) && this.#snapshot.authorityBlockers.some((blocker) => blocker.code === 1)
     if (unsupportedProjectile) {
-      const sticky = this.#snapshot?.weapon === 3
-      this.#blockers.add(`Missing exact IVP ${sticky ? "sticky" : "grenade"} rigid-body solver: launch is rejected before projectile creation`)
-      this.#set({ unsupportedState: sticky ? "StickyPhysicsSolverUnavailable" : "GrenadePhysicsSolverUnavailable" })
+      this.#blockers.add("Complete map rigid-body resources are unavailable")
+      this.#set({ unsupportedState:"RigidResourcesUnavailable" })
     }
     const command = encodeCommand({
       forward: forward * 450,
@@ -4624,7 +4624,8 @@ export class Tf2Application {
       if (owners & GAME_UI_FRAME_OWNER) this.#gameUi?.frame(timeSeconds)
       if (owners & LOADING_FRAME_OWNER) this.#loadingVgui?.frame(timeSeconds)
       if (owners & OPTIONS_FRAME_OWNER) this.#options?.frame(timeSeconds)
-      if (owners & HUD_FRAME_OWNER) { this.#hudIntegration?.frame(timeSeconds); this.#engineer?.frame(timeSeconds) }
+      this.#hudIntegration?.frame(timeSeconds, Boolean(owners & HUD_FRAME_OWNER))
+      if (owners & HUD_FRAME_OWNER) this.#engineer?.frame(timeSeconds)
       if (this.#view.localMatchVisible) this.#localMatch?.frame(timeSeconds)
       if (this.#equipment?.visible()) { this.#equipment.frame(timeSeconds); this.#renderEquipment() }
       if (this.#classSelection?.state().visible) this.#classSelection.frame(timeSeconds)
@@ -4933,10 +4934,11 @@ export class Tf2Application {
     }
     if (profile?.captureProjectileQueries === true) profile.projectileQueries = renderer.captureParticleVisibilityEvidence()
     if (profile?.captureProjectileGameplay === true) profile.projectileState = {
+      pipebombCount: prepared.snapshot.pipebombCount, chargeProgress: prepared.snapshot.chargeProgress,
       tick: prepared.snapshot.tick.toString(), health: prepared.snapshot.health, grounded: prepared.snapshot.grounded,
       position: prepared.snapshot.position, velocity: prepared.snapshot.velocity, conditions: prepared.snapshot.conditions,
       bots: prepared.snapshot.bots.length, ropeItems: particles.filter(item => item.primitive === "rope").length,
-      projectileItems: prepared.snapshot.projectiles.map(item => ({ identity: item.identity, kind: item.kind, trail: item.trail, miniRocket: item.miniRocket, modelVisible: item.modelVisible })),
+      projectileItems: prepared.snapshot.projectiles.map(item => ({ identity: item.identity, kind: item.kind, state:item.state,position:item.position,velocity:item.velocity,orientation:item.orientation,contactNormal:item.contactNormal,trail: item.trail, miniRocket: item.miniRocket, modelVisible: item.modelVisible })),
     }
     if (profile?.captureProjectileHistory === true && !browserFrameProfiler()?.active) {
       const state = profile.projectileState as { grounded: boolean; conditions: number[]; projectileItems: { identity: number; trail: number }[] }
@@ -5312,6 +5314,12 @@ export class Tf2Application {
         }
       }
       for (const event of snapshot.projectileEvents) {
+        const profile=(globalThis as any).__playsrcProfile
+        if(profile?.captureProjectileGameplay===true){
+          const journal=(profile.projectileEvents??=[]) as unknown[]
+          journal.push({type:event.type,kind:event.kind,projectile:event.projectile,tick:event.tick.toString(),position:event.position,normal:event.contactNormal,owner:event.ownerIdentity})
+          if(journal.length>512)journal.splice(0,journal.length-512)
+        }
         if (event.type === "fire") {this.#fireEvents += 1;this.#fireTickHistory.push(`${event.kind}:${event.tick}:${event.position.join(",")}`);if(this.#fireTickHistory.length>128)this.#fireTickHistory.shift()}
         if (event.type === "explode") this.#explosionEvents += 1
       }

@@ -155,6 +155,8 @@ SupportedItem { definition_index: 15, implementation: Implementation::Weapon(Wea
 SupportedItem { definition_index: 16, implementation: Implementation::Weapon(Weapon::Smg), quality: 0, style: 0, attributes: &[] },
 SupportedItem { definition_index: 17, implementation: Implementation::Weapon(Weapon::SyringeGun), quality: 0, style: 0, attributes: &[] },
 SupportedItem { definition_index: 18, implementation: Implementation::Weapon(Weapon::RocketLauncher), quality: 0, style: 0, attributes: &[] },
+SupportedItem { definition_index: 19, implementation: Implementation::Weapon(Weapon::GrenadeLauncher), quality: 0, style: 0, attributes: &[] },
+SupportedItem { definition_index: 20, implementation: Implementation::Weapon(Weapon::StickybombLauncher), quality: 0, style: 0, attributes: &[] },
 SupportedItem { definition_index: 21, implementation: Implementation::Weapon(Weapon::Flamethrower), quality: 0, style: 0, attributes: &[] },
 SupportedItem { definition_index: 22, implementation: Implementation::Weapon(Weapon::EngineerPistol), quality: 0, style: 0, attributes: &[] },
 SupportedItem { definition_index: 23, implementation: Implementation::Weapon(Weapon::Pistol), quality: 0, style: 0, attributes: &[] },

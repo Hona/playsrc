@@ -156,6 +156,21 @@ macro_rules! native_sounds {
         CartFinalWarning = 120, "Announcer.Cart.FinalWarning", 10;
         CartAlarm = 121, "Cart.Warning", 1;
         CartAlarmSingle = 122, "Cart.WarningSingle", 1;
+        GrenadeSingle = 123, "Weapon_GrenadeLauncher.Single", 1;
+        GrenadeCritical = 124, "Weapon_GrenadeLauncher.SingleCrit", 1;
+        GrenadeReload = 125, "Weapon_GrenadeLauncher.WorldReload", 1;
+        GrenadeModeSwitch = 126, "Weapon_GrenadeLauncher.ModeSwitch", 1;
+        GrenadeBounce = 127, "Weapon_Grenade_Pipebomb.Bounce", 1;
+        StickyCharge = 224, "Weapon_StickyBombLauncher.ChargeUp", 1;
+        DefaultImpactHard = 225, "Default.ImpactHard", 3;
+        DefaultImpactSoft = 226, "Default.ImpactSoft", 3;
+        GrenadeImpactHard = 227, "Grenade.ImpactHard", 3;
+        GrenadeImpactSoft = 228, "Grenade.ImpactSoft", 3;
+        SolidMetalImpactHard = 229, "SolidMetal.ImpactHard", 3;
+        SolidMetalImpactSoft = 230, "SolidMetal.ImpactSoft", 3;
+        FleshImpactHard = 231, "Flesh.ImpactHard", 4;
+        FleshImpactSoft = 232, "Flesh.ImpactSoft", 4;
+        FlameDeflect = 233, "Weapon_FlameThrower.AirBurstAttackDeflect", 1;
     } };
 }
 pub(crate) use native_sounds;

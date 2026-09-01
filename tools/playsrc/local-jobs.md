@@ -11,6 +11,7 @@ bun tools/playsrc/src/local-job.ts run <job> test tools/playsrc/tests/windows-de
 bun tools/playsrc/src/local-job.ts run <job> build jump_beef
 bun tools/playsrc/src/local-job.ts run <job> build-stage wasm
 bun tools/playsrc/src/local-job.ts run <job> build-stage producer
+bun tools/playsrc/src/local-job.ts run <job> build-stage browser
 bun tools/playsrc/src/local-job.ts run <job> build-stage resources jump_beef
 bun tools/playsrc/src/local-job.ts run <job> profile gameplay
 # Explicitly prepare cold profiles without a browser in a separate bounded task:
@@ -22,7 +23,9 @@ Preparation creates a detached checkout in `sourceCacheDir/local-jobs`, copies
 only the three configured roots and installs frozen dependencies. It opens no
 UI and never resets the developer's checkout. A stage prepares only its normal
 artifact owner; the final ordinary build still verifies the complete closure.
-Builds/tests open no browser.
+Builds/tests open no browser. The browser stage installs only the Chromium and
+supporting binaries selected by the pinned Playwright package and records the
+executable hash; it never launches a browser or selects a fallback channel.
 
 ## Windows consent and ownership
 
@@ -111,6 +114,12 @@ it is not a desktop lease. The notification dismisses after three seconds.
 Denial, failure, cancellation, preflight errors and helper faults are logs-only;
 there is no failure-only notification helper or retry. Background receipts
 require `interactive: false`, an empty `desktop` list and zero UI invocations.
+
+Mac Demoman profiles use a native click for pointer capture: Chromium's emulated
+DOM focus does not establish the native content view as first responder. The
+helper requires existing event-posting access and rechecks the exact foreground,
+unobscured window before clicking. It never activates a window or substitutes a
+pointer-lock result. Aim coordinates come from the resulting trusted click.
 
 Profile authors use the existing application fixture and `profileArtifact` for
 post-browser analysis/retention. Its worker teardown closes test contexts, the
