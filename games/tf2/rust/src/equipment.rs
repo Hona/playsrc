@@ -385,6 +385,13 @@ impl Equipment {
                 normalized[8 + index * 4..12 + index * 4].copy_from_slice(&definition.to_le_bytes());
             }
             equipment.equip(class, slot, (definition != u32::MAX).then_some(definition))?;
+            if definition == u32::MAX {
+                // Empty means the available stock item, including implementations
+                // added since this profile was saved. Validate against that same
+                // normalization rather than rejecting a legitimate older profile.
+                normalized[8 + index * 4..12 + index * 4].copy_from_slice(
+                    &equipment.definition(class, slot).unwrap_or(u32::MAX).to_le_bytes());
+            }
         }
         equipment.revision = 0;
         if equipment.persist() != normalized { return Err(EquipmentError::InvalidPersistence); }
@@ -507,6 +514,24 @@ mod tests {
         assert!(equipment.equipped_items(PlayerClass::Demoman).iter().any(|item| item.definition_index == 19));
         assert!(equipment.equipped_items(PlayerClass::Demoman).iter().any(|item| item.definition_index == 20));
         assert_eq!(Equipment::restore(&equipment.persist()), Ok(equipment));
+    }
+
+    #[test]
+    fn previous_release_empty_stock_slots_upgrade_without_losing_loadout() {
+        // v0.0.12 (0d58a1d699460d5ede52d255ecaf024dd7d63e44)
+        // equipment-state.json persistence: Demoman's unimplemented launchers
+        // were empty. Persisting any equip saved those empty slots too.
+        let mut expected = Equipment::default();
+        expected.equip(PlayerClass::Scout, LoadoutPosition::Primary, Some(45)).unwrap();
+        let mut previous = expected.persist();
+        for position in [LoadoutPosition::Primary, LoadoutPosition::Secondary] {
+            let offset = 8 + ((PlayerClass::Demoman as usize - 1) * CLASS_SLOT_COUNT + position as usize) * 4;
+            previous[offset..offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        }
+        let restored = Equipment::restore(&previous).unwrap();
+        assert_eq!(restored.persist(), expected.persist());
+        assert_eq!(Equipment::restore(&restored.persist()).unwrap().persist(), expected.persist());
+        assert_eq!(restored.definition(PlayerClass::Scout, LoadoutPosition::Primary), Some(45));
     }
 
     #[test]
