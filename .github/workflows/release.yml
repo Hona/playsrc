@@ -4,9 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Patch release version, beginning with 0.0.1, without the v prefix
+        description: Exact next release version without the v prefix
         required: true
         type: string
+      increment:
+        description: Select minor only with explicit user authorization; otherwise next patch
+        required: true
+        type: choice
+        default: patch
+        options:
+          - patch
+          - minor
       startup_receipt:
         description: JSON receipt from the exact approved static package's headed cold and warm-upgrade movie/menu/playable-frame gate
         required: false
@@ -38,18 +46,22 @@ jobs:
           ref: main
           fetch-depth: 0
 
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: canary
+
       - name: Resolve release identity
         id: release
         shell: bash
         env:
           VERSION: ${{ inputs.version }}
+          INCREMENT: ${{ inputs.increment }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [[ ! "$VERSION" =~ ^0\.0\.[1-9][0-9]*$ ]]; then
-            echo "version must be 0.0.<positive patch number> without a v prefix" >&2
-            exit 2
-          fi
+          latest="$(gh release view --json tagName --jq .tagName)"
+          git ls-remote --tags --refs origin | sed 's|.*refs/tags/||' | bun tools/playsrc/src/release-version.ts "$VERSION" "${latest#v}" "$INCREMENT"
           tag="v${VERSION}"
           sha="$(git rev-parse HEAD)"
           remote_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
@@ -58,26 +70,13 @@ jobs:
             exit 2
           fi
           existing_tag="$(git ls-remote origin "refs/tags/${tag}" | cut -f1)"
-          if [[ -n "$existing_tag" && "$existing_tag" != "$sha" ]]; then
-            echo "${tag} already identifies another commit" >&2
+          if [[ -n "$existing_tag" ]]; then
+            echo "${tag} already exists" >&2
             exit 2
           fi
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "${tag} already has a GitHub Release" >&2
             exit 2
-          fi
-          if [[ -z "$existing_tag" ]]; then
-            latest_patch=0
-            while IFS= read -r existing; do
-              if [[ "$existing" =~ ^v0\.0\.([1-9][0-9]*)$ ]] && (( BASH_REMATCH[1] > latest_patch )); then
-                latest_patch="${BASH_REMATCH[1]}"
-              fi
-            done < <(git tag --list "v0.0.*")
-            expected="0.0.$((latest_patch + 1))"
-            if [[ "$VERSION" != "$expected" ]]; then
-              echo "next release must be ${expected}" >&2
-              exit 2
-            fi
           fi
           notes="apps/web/tf2/releases/notes/${tag}.md"
           if [[ ! -s "$notes" ]]; then
@@ -91,11 +90,6 @@ jobs:
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
           echo "notes=${notes}" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: canary
 
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v4.0.1
